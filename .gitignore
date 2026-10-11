@@ -13,3 +13,4 @@ certificates/
 *.key
 *.p12
 *.pfx
+handoff.md

@@ -116,9 +116,17 @@ D1のTime Travel／エクスポートでバックアップを取得し、更新�
 
 共通の初期ID・パスワードはありません。初期設定リンク `/#setup=<SETUP_TOKEN>` を開き、管理者のログインIDとパスワードを登録します。登録後はそのIDとパスワードでログインし、管理画面からスタッフのアカウントを追加できます。初期設定リンクや秘密値をREADME・Issueなどに公開しないでください。
 
-証明書認証の移行先URL: https://caravan.kurisora.jp/
+本番URL: https://caravan.asian-jasmine.com/
 
-DNS移行・端末への証明書登録・本番切り替えの完了後に利用するURLです。証明書認証を通過した後もログインが必要です。新しいホストでは再ログインしてください。
+クライアント証明書を登録した端末だけがアクセスできます。証明書認証を通過した後もログインが必要です。旧URL（`workers.dev`）で作成したアカウントは同じD1を使うため、そのまま新URLでログインできます。
+
+## トラブルシューティング
+
+- **ログイン時に「アクセス元が一致しません」**: 稼働中Workerの `APP_ORIGIN` が、ブラウザで開いているURLのOriginと一致していません。ダッシュボードの「設定 → 変数とシークレット」で `APP_ORIGIN` と `MTLS_HOST` を確認し、正しい設定で再デプロイしてください。
+- **`wrangler deploy` で変数が上書きされる**: `vars` は設定ファイルの内容で置き換わり、ダッシュボードだけにある変数（例: `SETUP_EXPIRES`）は削除されます。シークレットは維持されます。
+- **証明書を入れたのに403になる**: Chromeは証明書を選ばなかった結果をセッション中キャッシュします。⌘QでChromeを完全に終了して再起動し、証明書選択ダイアログで該当証明書を選んでください。サーバー側の確認は `curl --cert client.pem --key client.key https://caravan.YOUR_DOMAIN/` で行えます。
+- **`wrangler login` がトークン取得でタイムアウト（ETIMEDOUT）する**: IPv6経路の問題の可能性があります。`NODE_OPTIONS=--dns-result-order=ipv4first` を付けて再実行してください。
+- **追加直後のCustom Domainが名前解決できない**: macOSのDNS否定キャッシュが残っていることがあります。`sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder` を実行し、Chromeでは `chrome://net-internals/#dns` からキャッシュを消去してください。
 
 ## ライセンス
 
