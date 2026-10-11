@@ -1,0 +1,11 @@
+import test from 'node:test';import assert from 'node:assert/strict';
+import {occurrences,weekStart,jstDate,dateKey,timeKey} from '../src/lib/date';
+import {parseCsv,encodeCsv} from '../src/lib/csv';
+import {appointmentSchema,keySchema,patientSchema} from '../src/lib/validation';
+test('JST and Monday week boundaries survive UTC/year boundaries',()=>{assert.equal(weekStart('2027-01-01'),'2026-12-28');assert.equal(dateKey(jstDate('2027-01-01','00:15')),'2027-01-01');assert.equal(timeKey(jstDate('2027-01-01','00:15')),'00:15');});
+test('alternate weeks start from the anchor week',()=>{assert.deepEqual(occurrences('2026-12-28','2027-01-25',{kind:'weekly',interval:2,weekdays:[1],ordinals:[]}),['2026-12-28','2027-01-11','2027-01-25']);});
+test('first and third weekday, with nonexistent fifth weekday skipped',()=>{assert.deepEqual(occurrences('2027-02-01','2027-02-28',{kind:'monthly',interval:1,weekdays:[2],ordinals:[1,3,5]}),['2027-02-02','2027-02-16']);});
+test('recurrence bounds and invalid dates are rejected',()=>{assert.throws(()=>occurrences('2026-01-01','2030-01-01',{kind:'weekly',interval:1,weekdays:[1],ordinals:[]}));assert.equal(keySchema.safeParse('2026-02-30').success,false);});
+test('CSV handles BOM, quotes, commas and multiline notes',()=>{const data=[['患者番号','メモ'],['001','a,b\n"検査"']];assert.deepEqual(parseCsv(encodeCsv(data)),data);assert.throws(()=>parseCsv('"abc'));assert.throws(()=>parseCsv('"a"oops,b'));});
+test('appointment validation rejects reversed times and incomplete recurrence',()=>{const base={patientId:null,title:'診療',date:'2027-01-01',startTime:'10:00',endTime:'09:00',staffIds:['one'],memo:''};assert.equal(appointmentSchema.safeParse(base).success,false);assert.equal(appointmentSchema.safeParse({...base,endTime:'10:30',recurrence:{kind:'weekly',interval:1,weekdays:[5],ordinals:[]}}).success,false);});
+test('patient URL accepts only HTTPS movacal hosts',()=>{const base={number:'001',name:'架空',address:'',facilityId:null};assert.equal(patientSchema.safeParse({...base,movacalUrl:'https://s2.movacal.net/25.5/?pid=patient_detail&patient_id=123'}).success,true);assert.equal(patientSchema.safeParse({...base,movacalUrl:'javascript:alert(1)'}).success,false);assert.equal(patientSchema.safeParse({...base,movacalUrl:'https://movacal.net.evil.example/'}).success,false);});
