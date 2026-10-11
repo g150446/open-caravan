@@ -76,6 +76,8 @@ WAFのカスタムルールをBlockに設定します。以下のホストは自
 
 Workerも `request.cf.tlsClientAuth` の `certPresented=1`、`certVerified=SUCCESS`、`certRevoked=0` と許可フィンガープリントを確認します。利用者が送った証明書ヘッダーは信頼しません。証明書がないリクエストはログイン画面やhealth APIを含め拒否されます。設定が欠けている場合は503で拒否します。
 
+**HTTP/3は無効にしてください**（ゾーンの Speed → 設定 → プロトコルの最適化 → 「HTTP/3 (QUIC 使用)」をオフ）。HTTP/3ではクライアント証明書が送信されません。有効のままだと、ブラウザはDNSのHTTPSレコード（`alpn=h3`）を見てHTTP/3で接続し、証明書を入れた端末でもブロックされます。Chromeを再起動しても解消しません。無効化後は `dig +short caravan.YOUR_DOMAIN TYPE65` の結果に `h3`（16進表記 `026833`）が含まれないことを確認します。
+
 `APP_ORIGIN` と `MTLS_HOST` をCustom Domainと一致させ、新URLで証明書付きの動作を確認してから `workers.dev` を無効化します。プレビューURLも無効にします。静的アセットを別の公開サービスへ配置する場合も証明書認証が必要です。Workers Static Assetsのバインディングを使う場合は `assets.run_worker_first=true` を設定し、アセットへの直接配信による検証の迂回を防いでください。
 
 ### 発行・端末追加
@@ -112,7 +114,7 @@ defaults write com.google.Chrome AutoSelectCertificateForUrls -array -string \
   '{"pattern":"https://caravan.YOUR_DOMAIN","filter":{"ISSUER":{"CN":"Managed CA YOUR_ACCOUNT_ID"}}}'
 ```
 
-ブロック画面から抜けられない場合: AndroidはChromeを「設定 → アプリ → Chrome → **強制停止**」してから開き直し、証明書を選択します。MacはChromeを⌘Qで完全に終了してから開き直します。Cloudflare Freeプランではブロック画面の文言を変更できません（Custom ErrorsはPro以上）。
+ブロック画面から抜けられない場合: まずHTTP/3が無効になっているかを確認します（CloudflareのセキュリティイベントでHTTPバージョンが `HTTP/3` なら、これが原因）。そのうえで、AndroidはChromeを「設定 → アプリ → Chrome → **強制停止**」してから開き直し、証明書を選択します。MacはChromeを⌘Qで完全に終了してから開き直します。Cloudflare Freeプランではブロック画面の文言を変更できません（Custom ErrorsはPro以上）。
 
 ### 更新・失効
 
@@ -144,7 +146,7 @@ D1のTime Travel／エクスポートでバックアップを取得し、更新�
 
 - **ログイン時に「アクセス元が一致しません」**: 稼働中Workerの `APP_ORIGIN` が、ブラウザで開いているURLのOriginと一致していません。ダッシュボードの「設定 → 変数とシークレット」で `APP_ORIGIN` と `MTLS_HOST` を確認し、正しい設定で再デプロイしてください。
 - **`wrangler deploy` で変数が上書きされる**: `vars` は設定ファイルの内容で置き換わり、ダッシュボードだけにある変数（例: `SETUP_EXPIRES`）は削除されます。シークレットは維持されます。
-- **証明書を入れたのに403になる**: Chromeは証明書を選ばなかった結果をセッション中キャッシュします。⌘QでChromeを完全に終了して再起動し、証明書選択ダイアログで該当証明書を選んでください。サーバー側の確認は `curl --cert client.pem --key client.key https://caravan.YOUR_DOMAIN/` で行えます。
+- **証明書を入れたのに403になる**: CloudflareのHTTP/3が有効だと証明書が送られません。上記「クライアント証明書認証」のとおりHTTP/3を無効にしてください。それでも403になる場合: Chromeは証明書を選ばなかった結果をセッション中キャッシュします。⌘QでChromeを完全に終了して再起動し、証明書選択ダイアログで該当証明書を選んでください。サーバー側の確認は `curl --cert client.pem --key client.key https://caravan.YOUR_DOMAIN/` で行えます。
 - **`wrangler login` がトークン取得でタイムアウト（ETIMEDOUT）する**: IPv6経路の問題の可能性があります。`NODE_OPTIONS=--dns-result-order=ipv4first` を付けて再実行してください。
 - **追加直後のCustom Domainが名前解決できない**: macOSのDNS否定キャッシュが残っていることがあります。`sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder` を実行し、Chromeでは `chrome://net-internals/#dns` からキャッシュを消去してください。
 
