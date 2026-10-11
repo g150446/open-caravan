@@ -1,0 +1,33 @@
+{
+  "name": "open-caravan",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --import tsx scripts/dev.ts",
+    "build": "vite build && node scripts/build-worker.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test tests/*.test.ts",
+    "preview": "node --import tsx scripts/dev.ts",
+    "deploy": "npm exec --package=wrangler@4 -- wrangler deploy",
+    "db:migrate": "npm exec --package=wrangler@4 -- wrangler d1 migrations apply open-caravan-db --remote",
+    "preview:fixture": "node scripts/build-preview.mjs"
+  },
+  "dependencies": {
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
+    "zod": "4.5.4"
+  },
+  "devDependencies": {
+    "@types/node": "20.19.25",
+    "@types/react": "19.2.7",
+    "@types/react-dom": "19.2.3",
+    "esbuild": "0.28.2",
+    "tsx": "4.21.0",
+    "typescript": "5.9.3",
+    "vite": "7.3.6"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}
