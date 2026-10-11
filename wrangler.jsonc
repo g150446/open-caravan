@@ -1,0 +1,21 @@
+{
+  "name": "open-caravan",
+  "main": "build/worker.js",
+  "compatibility_date": "2026-10-11",
+  "workers_dev": true,
+  "preview_urls": false,
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "open-caravan-db",
+      "database_id": "REPLACE_WITH_YOUR_D1_DATABASE_ID",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "vars": {
+    "APP_ORIGIN": "https://open-caravan.YOUR_SUBDOMAIN.workers.dev"
+  },
+  "observability": {
+    "enabled": false
+  }
+}
