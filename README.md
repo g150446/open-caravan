@@ -94,6 +94,26 @@ openssl pkcs12 -export -inkey certificates/client.key -in certificates/client.pe
 
 フィンガープリントを `MTLS_ALLOWED_SHA256` に追加してから `.p12` をMacのキーチェーンに読み込みます。秘密鍵と配布ファイルは `certificates/` に保存し、Git対象外にします。保護パスワードは別に管理してください。Macではキーチェーンの証明書を利用できるブラウザがアクセスできます。
 
+**証明書をインストールしてからURLを初めて開いてください。** 先に開いたり、証明書選択で「拒否／キャンセル」を選んだりすると、Chromeは「証明書なし」の選択をセッション中保持します。その間はCloudflareのブロック画面が表示され続けます。
+
+Android（Chrome）向けの `.p12` は、Androidが読み込める暗号方式で作成します。
+
+```sh
+openssl pkcs12 -export -inkey certificates/android.key -in certificates/android.pem -name 'Open Caravan Android' \
+  -certpbe PBE-SHA1-3DES -keypbe PBE-SHA1-3DES -macalg sha1 -out certificates/android.p12
+```
+
+端末では「設定 → セキュリティ → 暗号化と認証情報 → 証明書のインストール → **VPN とアプリユーザー証明書**」から読み込みます。「CA証明書」として入れると利用できません。初回アクセス時の「証明書の選択」で該当証明書を選びます。
+
+MacのChromeでは、ポリシー `AutoSelectCertificateForUrls` を設定すると証明書を自動選択するため、選択ダイアログが出ず、誤ってキャンセルすることもなくなります（設定後にChromeを一度再起動し、`chrome://policy` で反映を確認）。
+
+```sh
+defaults write com.google.Chrome AutoSelectCertificateForUrls -array -string \
+  '{"pattern":"https://caravan.YOUR_DOMAIN","filter":{"ISSUER":{"CN":"Managed CA YOUR_ACCOUNT_ID"}}}'
+```
+
+ブロック画面から抜けられない場合: AndroidはChromeを「設定 → アプリ → Chrome → **強制停止**」してから開き直し、証明書を選択します。MacはChromeを⌘Qで完全に終了してから開き直します。Cloudflare Freeプランではブロック画面の文言を変更できません（Custom ErrorsはPro以上）。
+
 ### 更新・失効
 
 有効期間は1年を基本とし、期限の30日前を目安に新しい鍵と証明書を発行します。許可リストに新証明書を追加し、動作確認後に旧証明書を失効して許可リストから削除します。紛失した端末の証明書はCloudflareで失効し、許可リストからも削除します。既存セッションがあっても、以降のリクエストは証明書検証を通過する必要があります。
