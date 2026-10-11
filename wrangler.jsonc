@@ -2,8 +2,9 @@
   "name": "open-caravan",
   "main": "build/worker.js",
   "compatibility_date": "2026-10-11",
-  "workers_dev": true,
+  "workers_dev": false,
   "preview_urls": false,
+  "routes": [{"pattern": "caravan.YOUR_DOMAIN", "custom_domain": true}],
   "d1_databases": [
     {
       "binding": "DB",
@@ -13,7 +14,10 @@
     }
   ],
   "vars": {
-    "APP_ORIGIN": "https://open-caravan.YOUR_SUBDOMAIN.workers.dev"
+    "APP_ORIGIN": "https://caravan.YOUR_DOMAIN",
+    "MTLS_MODE": "required",
+    "MTLS_HOST": "caravan.YOUR_DOMAIN",
+    "MTLS_ALLOWED_SHA256": "REPLACE_WITH_CLIENT_CERTIFICATE_SHA256"
   },
   "observability": {
     "enabled": false
