@@ -24,3 +24,17 @@ test('CSV preview chunks reject duplicates and commit atomically',async()=>{cons
 test('DB-backed login throttling survives requests and unknown IDs',async()=>{const f=fixture();await f.initialize();for(let i=0;i<10;i++)assert.equal((await f.call('auth/login','POST',{login:'missing',password:'wrong'})).res.status,401);assert.equal((await f.call('auth/login','POST',{login:'missing',password:'wrong'})).res.status,429);f.db.close();});
 
 test('initial runtime check validates secret without creating accounts',async()=>{const f=fixture();assert.equal((await f.call('setup/check','POST',{token:'bad'})).res.status,403);assert.equal((await f.call('setup/check','POST',{token:f.env.SETUP_TOKEN})).res.status,200);assert.equal(f.db.raw.prepare('SELECT COUNT(*) AS n FROM records').get()!.n,0);await f.initialize();assert.equal((await f.call('setup/check','POST',{token:f.env.SETUP_TOKEN})).res.status,409);f.db.close();});
+
+test('patient visit frequency persists, legacy defaults and CSV updates preserve it',async()=>{
+ const f=fixture();await f.initialize();const input={number:'FREQ001',name:'架空患者',kana:'',address:'',movacalUrl:'',handover:'',facilityId:null,visitFrequency:'月1回'};
+ assert.equal((await f.mutate('patients','POST',input)).res.status,200);
+ let p=(await f.call('bootstrap')).data.data.patients[0];assert.equal(p.visitFrequency,'月1回');assert.equal(p.facilityId,null);
+ assert.equal((await f.mutate('patients/'+p.id,'PATCH',{...input,version:p.version,visitFrequency:'月2回'})).res.status,200);
+ p=(await f.call('bootstrap')).data.data.patients[0];const {visitFrequency,...legacyInput}=input;assert.equal((await f.mutate('patients/'+p.id,'PATCH',{...legacyInput,version:p.version})).res.status,200);assert.equal((await f.call('bootstrap')).data.data.patients[0].visitFrequency,'月2回');
+ let r=await f.call('imports/patients/start','POST',{revision:f.revision});const id=r.data.id;
+ await f.call('imports/patients/preview','POST',{id,chunk:0,rows:[['FREQ001','架空患者','','','','','']]});
+ assert.equal((await f.call('imports/patients/commit','POST',{id})).res.status,200);p=(await f.call('bootstrap')).data.data.patients[0];assert.equal(p.visitFrequency,'月2回');
+ const rev=(await f.call('changes')).data.revision;assert.equal((await f.call('patients','POST',{...input,number:'TOOLONG',visitFrequency:'x'.repeat(41),revision:rev})).res.status,400);
+ assert.equal((await f.call('patients','POST',{number:'LEGACY',name:'架空',address:'',movacalUrl:'',facilityId:null,revision:rev})).res.status,200);
+ assert.equal((await f.call('bootstrap')).data.data.patients.find((x:any)=>x.number==='LEGACY').visitFrequency,'');f.db.close();
+});
