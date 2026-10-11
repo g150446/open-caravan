@@ -49,7 +49,7 @@ async function api(req:Request,env:Env,url:URL):Promise<Response>{
  let data:Record<string,unknown>;
  if(resource==='patients'){
  if(operation==='handover'&&current)data={...current,handover:z.string().max(30000).parse(b.handover)};
- else{assert(!operation,405,'操作できません。');data=patientSchema.parse(b);if(data.facilityId)assert(await get(env.DB,String(data.facilityId),'facilities'),400,'施設がありません。');}
+ else{assert(!operation,405,'操作できません。');data=patientSchema.parse({...b,visitFrequency:b.visitFrequency===undefined?(current?.visitFrequency??''):b.visitFrequency});if(data.facilityId)assert(await get(env.DB,String(data.facilityId),'facilities'),400,'施設がありません。');}
  }else if(resource==='facilities'){assert(!operation,405,'操作できません。');data=facilitySchema.parse(b);}
  else{
  assert(actor.role==='ADMIN',403,'管理者のみ操作できます。');assert(!operation,405,'操作できません。');const parsed=staffSchema.parse(b);const {password,...fields}=parsed;data=fields;
