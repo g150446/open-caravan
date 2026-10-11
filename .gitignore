@@ -8,3 +8,8 @@ data/
 .wrangler/
 *.tsbuildinfo
 wrangler.local.jsonc
+PLAN.md
+certificates/
+*.key
+*.p12
+*.pfx
