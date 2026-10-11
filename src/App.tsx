@@ -28,7 +28,7 @@ export default function App(){
  useEffect(()=>{void load();},[load]);
  useEffect(()=>{if(!user)return;const check=async()=>{if(document.hidden||modal)return;try{const r=await api('changes');if(r.revision!==revisionRef.current)await load();}catch(e){E((e as Error).message);}};const timer=setInterval(check,30000);document.addEventListener('visibilitychange',check);return()=>{clearInterval(timer);document.removeEventListener('visibilitychange',check);};},[user,api,modal,load]);
  useEffect(()=>{if(tab==='audit')api('audit').then(AU).catch(e=>E(e.message));},[tab,api]);
- useEffect(()=>{history.replaceState(null,'',`?targetDate=${date}`);},[date]);
+ useEffect(()=>{history.replaceState(null,'',date===today()?location.pathname:`?targetDate=${date}`);},[date]);
  const openDetail=async(a:Appointment)=>{try{const r=await api('appointments/'+a.id);if(r.revision!==revisionRef.current)await load();DT(r.data);}catch(e){E((e as Error).message);}};
  const saved=async()=>{await load();N('保存しました');setTimeout(()=>N(''),3500);};
  const patient=(a:Appointment)=>masters.patients.find(p=>p.id===a.patientId),facility=(p?:Patient)=>masters.facilities.find(f=>f.id===p?.facilityId),staffNames=(a:Appointment)=>a.staffIds.map(id=>masters.staff.find(s=>s.id===id)?.name??'未登録').join('・');
