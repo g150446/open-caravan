@@ -116,6 +116,21 @@ defaults write com.google.Chrome AutoSelectCertificateForUrls -array -string \
 
 ブロック画面から抜けられない場合: まずHTTP/3が無効になっているかを確認します（CloudflareのセキュリティイベントでHTTPバージョンが `HTTP/3` なら、これが原因）。そのうえで、AndroidはChromeを「設定 → アプリ → Chrome → **強制停止**」してから開き直し、証明書を選択します。MacはChromeを⌘Qで完全に終了してから開き直します。Cloudflare Freeプランではブロック画面の文言を変更できません（Custom ErrorsはPro以上）。
 
+### スクリプトでまとめて発行・失効
+
+`scripts/device-cert.mjs` は、鍵とCSRの作成、Cloudflareでの発行、Android/macOS/iOS/Windows共通の `.p12` とパスワードの作成、`wrangler.local.jsonc` の `MTLS_ALLOWED_SHA256` への追加をまとめて行います。証明書は人ではなく端末ごとに発行します（スタッフの識別はログインで行います）。
+
+```sh
+# ゾーンの「SSL and Certificates: 編集」権限を持つAPIトークン（未設定ならCSRを表示し、PEMの貼り付けを待つ）
+export CLOUDFLARE_API_TOKEN=...
+npm run device-cert -- issue tanaka-iphone tanaka-pc sato-android sato-pc
+npm run device-cert -- list             # 有効／失効／未反映を表示
+npm run device-cert -- revoke sato-android   # 紛失時。Cloudflareで失効し許可リストから削除
+NODE_OPTIONS=--dns-result-order=ipv4first npx --yes wrangler@4 deploy --config wrangler.local.jsonc
+```
+
+発行物は `certificates/devices/<端末名>/`、台帳は `certificates/devices.json` に保存されます（Git対象外）。`.p12` と `password.txt` は別々の経路で端末に渡し、インストール後に端末から削除してもらいます。有効期間は `CERT_VALIDITY_DAYS`（既定365日）で変更できます。
+
 ### 更新・失効
 
 有効期間は1年を基本とし、期限の30日前を目安に新しい鍵と証明書を発行します。許可リストに新証明書を追加し、動作確認後に旧証明書を失効して許可リストから削除します。紛失した端末の証明書はCloudflareで失効し、許可リストからも削除します。既存セッションがあっても、以降のリクエストは証明書検証を通過する必要があります。

@@ -11,7 +11,8 @@
     "preview": "node --import tsx scripts/dev.ts",
     "deploy": "npm exec --package=wrangler@4 -- wrangler deploy",
     "db:migrate": "npm exec --package=wrangler@4 -- wrangler d1 migrations apply open-caravan-db --remote",
-    "preview:fixture": "node scripts/build-preview.mjs"
+    "preview:fixture": "node scripts/build-preview.mjs",
+    "device-cert": "node scripts/device-cert.mjs"
   },
   "dependencies": {
     "react": "19.2.7",
