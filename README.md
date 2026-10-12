@@ -116,6 +116,8 @@ defaults write com.google.Chrome AutoSelectCertificateForUrls -array -string \
 
 ブロック画面から抜けられない場合: まずHTTP/3が無効になっているかを確認します（CloudflareのセキュリティイベントでHTTPバージョンが `HTTP/3` なら、これが原因）。そのうえで、AndroidはChromeを「設定 → アプリ → Chrome → **強制停止**」してから開き直し、証明書を選択します。MacはChromeを⌘Qで完全に終了してから開き直します。Cloudflare Freeプランではブロック画面の文言を変更できません（Custom ErrorsはPro以上）。
 
+利用者向けのインストール手順（Mac・Windows・Android・iPhone）: https://g150446.github.io/open-caravan/ （`docs/index.html`、GitHub Pagesで公開）
+
 ### スクリプトでまとめて発行・失効
 
 `scripts/device-cert.mjs` は、鍵とCSRの作成、Cloudflareでの発行、Android/macOS/iOS/Windows共通の `.p12` とパスワードの作成、`wrangler.local.jsonc` の `MTLS_ALLOWED_SHA256` への追加をまとめて行います。証明書は人ではなく端末ごとに発行します（スタッフの識別はログインで行います）。
