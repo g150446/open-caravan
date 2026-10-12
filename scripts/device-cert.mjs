@@ -107,10 +107,11 @@ async function revoke(names){
 }
 
 // .env.device-cert のトークンを、そのまま Worker の CLOUDFLARE_API_TOKEN に登録する。先にゾーンを引けるか確かめる。
+// wrangler にはこのトークンを渡さない（証明書の権限しかないので、wrangler login の認証で登録させる）。
 async function workerSecret(){
  if(!token)fail('.env.device-cert に CLOUDFLARE_API_TOKEN=... を書いてから実行してください。');
  await zone();
- execFileSync('npx',['--yes','wrangler@4','secret','put','CLOUDFLARE_API_TOKEN','--config',CONFIG],{input:token,stdio:['pipe','inherit','inherit'],env:{...process.env,NODE_OPTIONS:'--dns-result-order=ipv4first'}});
+ execFileSync('npx',['--yes','wrangler@4','secret','put','CLOUDFLARE_API_TOKEN','--config',CONFIG],{input:token,stdio:['pipe','inherit','inherit'],env:{...process.env,CLOUDFLARE_API_TOKEN:undefined,NODE_OPTIONS:'--dns-result-order=ipv4first'}});
  console.log('\n登録しました。デプロイなしで、スタッフ画面から証明書を発行できます。');
 }
 
