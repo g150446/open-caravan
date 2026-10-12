@@ -30,8 +30,8 @@ h3{font-size:17px;margin:24px 0 8px}
 .icon{flex:none;width:40px;height:40px;border-radius:9px;background:var(--brand);color:#fff;display:grid;place-items:center;font-weight:700;font-size:13px}
 .callout{background:var(--warn-bg);border:1px solid var(--warn-line);color:var(--warn-ink);border-radius:10px;padding:14px 16px;margin:16px 0}
 .callout strong{color:inherit}
-.tabs{display:flex;gap:6px;flex-wrap:wrap;margin:12px 0 0;border-bottom:1px solid var(--line)}
-.tabs button{font:inherit;font-weight:600;border:1px solid transparent;border-bottom:none;background:none;color:var(--muted);padding:10px 16px;border-radius:9px 9px 0 0;cursor:pointer;margin-bottom:-1px}
+.tabs{display:grid;grid-template-columns:repeat(4,1fr);gap:4px;margin:12px 0 0;border-bottom:1px solid var(--line)}
+.tabs button{font:inherit;font-weight:600;border:1px solid transparent;border-bottom:none;background:none;color:var(--muted);padding:10px 4px;border-radius:9px 9px 0 0;cursor:pointer;margin-bottom:-1px;white-space:nowrap;font-size:clamp(13px,3.6vw,16px)}
 .tabs button[aria-selected=true]{background:var(--card);border-color:var(--line);color:var(--brand)}
 .tabs button:focus-visible{outline:3px solid #f8b656;outline-offset:2px}
 .panel{background:var(--card);border:1px solid var(--line);border-top:none;border-radius:0 0 12px 12px;padding:8px 20px 20px}
@@ -65,11 +65,12 @@ footer{color:var(--muted);font-size:13px;padding:40px 0 48px}
 </section>
 
 <h2 id="install">端末ごとの手順</h2>
+<p class="note" style="margin-top:0">iPad は「iPhone」と同じ手順です。</p>
 <div class="tabs" role="tablist" aria-label="端末の種類">
  <button role="tab" id="tab-mac" aria-controls="p-mac" aria-selected="false">Mac</button>
  <button role="tab" id="tab-windows" aria-controls="p-windows" aria-selected="false">Windows</button>
  <button role="tab" id="tab-android" aria-controls="p-android" aria-selected="false">Android</button>
- <button role="tab" id="tab-iphone" aria-controls="p-iphone" aria-selected="false">iPhone・iPad</button>
+ <button role="tab" id="tab-iphone" aria-controls="p-iphone" aria-selected="false">iPhone</button>
 </div>
 
 <section class="panel" role="tabpanel" id="p-mac" aria-labelledby="tab-mac" hidden>
