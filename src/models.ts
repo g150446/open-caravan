@@ -7,3 +7,5 @@ export interface Series {id:string;version:number;startDate:string;endDate:strin
 export interface Masters {staff:Staff[];patients:Patient[];facilities:Facility[];}
 export interface Detail {appointment:Appointment;previous:Appointment[];next:Appointment[];series:Series|null;}
 export type Api=(path:string,method?:string,body?:unknown)=>Promise<any>;
+export interface Settings {officeName:string;officeAddress:string;marginMinutes:number;version:number;}
+export interface RouteResult {stops:{ids:string[];address:string}[];legs:{minutes:number;meters:number}[];skipped:string[];map:string|null;}

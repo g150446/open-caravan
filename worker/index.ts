@@ -2,7 +2,7 @@ import {serveStatic} from './static';
 import {z} from 'zod';
 import type {Env,Actor,Doc} from './types';
 import {assert,ApiError} from '../src/lib/errors';
-import {appointmentSchema,facilitySchema,keySchema,patientSchema,staffSchema} from '../src/lib/validation';
+import {appointmentSchema,facilitySchema,keySchema,patientSchema,settingsSchema,staffSchema,timeSchema} from '../src/lib/validation';
 import {addDays,dateKey,jstDate} from '../src/lib/date';
 import {authenticate,origin,login,setup,setupCheck,cookieName,changePassword,temporaryFields} from './auth';
 import {get,list,revision,commit,put,bulkPut,safeStaff,snapshot} from './store';
@@ -11,6 +11,7 @@ import {csvHeaders,encodeCsv} from '../src/lib/csv';
 import {imports} from './imports';
 import {requireClientCertificate} from './client-cert';
 import {certificates,activeCertificateIds,revokeAllStatement,revokeAtCloudflare} from './certificates';
+import {routes,getSettings,saveSettings} from './routes';
 const json=(body:unknown,status=200,headers:Record<string,string>={})=>new Response(JSON.stringify(body),{status,headers:{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store',...headers}});
 const security:Record<string,string>={'X-Content-Type-Options':'nosniff','X-Frame-Options':'DENY','Referrer-Policy':'no-referrer','Permissions-Policy':'camera=(), microphone=(), geolocation=()','Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"};
 async function bodyOf(req:Request){assert(Number(req.headers.get('content-length')??0)<=2000000,413,'データが大きすぎます。');const text=await req.text();assert(new TextEncoder().encode(text).length<=2000000,413,'データが大きすぎます。');let b:Record<string,unknown>;try{b=JSON.parse(text);}catch{throw new ApiError(400,'JSONが不正です。');}assert(b&&typeof b==='object'&&!Array.isArray(b),400,'送信データが不正です。');return b;}
@@ -28,7 +29,7 @@ async function api(req:Request,env:Env,url:URL):Promise<Response>{
  assert(!actor.mustChangePassword,403,'パスワードを設定してください。');
  if(certificateRoute)return json(await certificates(req,env,actor,id,rest[0],method==='POST'?await bodyOf(req):null));
  if(resource==='changes'&&method==='GET')return json(await revision(env.DB));
- if(resource==='bootstrap'&&method==='GET')return json(await snapshot(env.DB,async()=>{const [staff,patients,facilities]=await Promise.all([list(env.DB,'staff'),list(env.DB,'patients'),list(env.DB,'facilities')]);return {staff:staff.map(safeStaff),patients,facilities};}));
+ if(resource==='bootstrap'&&method==='GET')return json(await snapshot(env.DB,async()=>{const [staff,patients,facilities,settings]=await Promise.all([list(env.DB,'staff'),list(env.DB,'patients'),list(env.DB,'facilities'),getSettings(env.DB)]);return {staff:staff.map(safeStaff),patients,facilities,settings};}));
  if(resource==='appointments'&&method==='GET'){
  if(id)return json(await snapshot(env.DB,async()=>{const a=await get(env.DB,id,'appointments');assert(a&&!a.cancelled,404,'予定が見つかりません。');let previous:Doc[]=[],next:Doc[]=[];if(a.patientId){previous=(await list(env.DB,'appointments','AND patient_id=? AND cancelled=0 AND starts_at<? ORDER BY starts_at DESC LIMIT 3',[a.patientId,a.startsAt]));next=await list(env.DB,'appointments','AND patient_id=? AND cancelled=0 AND starts_at>? ORDER BY starts_at LIMIT 3',[a.patientId,a.startsAt]);}return {appointment:a,previous,next,series:a.seriesId?await get(env.DB,String(a.seriesId),'series'):null};}));
  const from=keySchema.parse(url.searchParams.get('from')),to=keySchema.parse(url.searchParams.get('to'));assert(to>from&&to<=addDays(from,370),400,'取得期間は1〜370日で指定してください。');
@@ -36,6 +37,8 @@ async function api(req:Request,env:Env,url:URL):Promise<Response>{
  }
  if(resource==='audit'&&method==='GET'){assert(actor.role==='ADMIN',403,'管理者のみ閲覧できます。');return json((await env.DB.prepare('SELECT * FROM audit ORDER BY created_at DESC LIMIT 100').all()).results);}
  if(resource==='imports'&&method==='GET'){assert(id==='patients'||id==='appointments',404,'テンプレートがありません。');return new Response(encodeCsv([csvHeaders[id]]),{headers:{'Content-Type':'text/csv; charset=utf-8','Content-Disposition':`attachment; filename="${id}.csv"`,'Cache-Control':'no-store'}});}
+ // ルートの計算は読み取りだけなので、更新番号の確認より前で扱う。
+ if(resource==='routes'&&!id&&method==='POST')return json(await routes(env,actor,await bodyOf(req)));
  assert(['POST','PATCH','DELETE'].includes(method),405,'操作できません。');const b=await bodyOf(req);
  if(resource==='imports')return json(await imports(env,actor,id,operation,b));
  const expected=z.number().int().nonnegative().parse(b.revision);const meta=await revision(env.DB);assert(meta.revision===expected,409,'別のスタッフが更新しました。再読込してください。');
@@ -48,6 +51,22 @@ async function api(req:Request,env:Env,url:URL):Promise<Response>{
  const days=new Set<string>();
  for(const item of items){const a=await get(env.DB,item.id,'appointments');assert(a&&!a.cancelled,409,'すでに削除された予定があります。再読込してください。');version(a,item);days.add(dateKey(String(a.startsAt)));entries.push(...await remove(env.DB,a,'one'));}
  entity=[...days].sort().join(',')+':'+items.length;
+ }else if(resource==='appointments'&&id==='batch-update'){
+ // ルート一括変更の保存。時刻の変更（同じ日の中だけ）と削除をまとめて反映する。繰り返し予定はその回だけ。1件でも古ければ何も変えない。
+ assert(method==='POST'&&!operation,405,'操作できません。');
+ const item=z.object({id:z.string().max(100),version:z.number().int().positive()});
+ const updates=z.array(item.extend({startTime:timeSchema,endTime:timeSchema})).max(300).parse(b.updates??[]),deletes=z.array(item).max(300).parse(b.deletes??[]);
+ const ids=[...updates,...deletes].map(i=>i.id);assert(ids.length&&ids.length<=300,400,'変更する予定は1〜300件にしてください。');assert(new Set(ids).size===ids.length,400,'同じ予定が含まれています。');
+ const days=new Set<string>();
+ for(const u of updates){const a=await get(env.DB,u.id,'appointments');assert(a&&!a.cancelled,409,'すでに削除された予定があります。再読込してください。');version(a,u);assert(u.endTime>u.startTime,400,'終了時刻は開始時刻より後にしてください。');
+ const day=dateKey(String(a.startsAt));days.add(day);entries.push({kind:resource,doc:{...a,startsAt:jstDate(day,u.startTime).toISOString(),endsAt:jstDate(day,u.endTime).toISOString(),version:a.version+1,exception:!!a.seriesId}});}
+ for(const d of deletes){const a=await get(env.DB,d.id,'appointments');assert(a&&!a.cancelled,409,'すでに削除された予定があります。再読込してください。');version(a,d);days.add(dateKey(String(a.startsAt)));entries.push(...await remove(env.DB,a,'one'));}
+ entity=[...days].sort().join(',')+':'+ids.length;
+ }else if(resource==='settings'&&!id&&method==='PATCH'){
+ // 事業所の設定（ルートの出発・到着地）。管理者だけが変えられる。
+ assert(actor.role==='ADMIN',403,'管理者のみ操作できます。');
+ const {version:v,...fields}=settingsSchema.parse(b);const current=await getSettings(env.DB);assert(v===current.version,409,'別のスタッフが更新しました。再読込してください。');
+ extra.push(saveSettings(env.DB,fields,v+1));entity='office';
  }else if(resource==='appointments'){
  if(method==='POST'&&!id)entries=await create(env.DB,b);
  else{assert(id,400,'予定IDが必要です。');const a=await get(env.DB,id,'appointments');assert(a&&!a.cancelled,404,'予定が見つかりません。');
@@ -89,7 +108,7 @@ async function api(req:Request,env:Env,url:URL):Promise<Response>{
  }
  entries=[{kind:resource,doc:{...data,id:nextId,version:current?current.version+1:1}}];entity=nextId;
  }else throw new ApiError(404,'APIがありません。');
- await commit(env.DB,expected,[bulkPut(env.DB,entries),...extra],actor.id,method+'_'+resource+(resource==='appointments'&&id==='bulk-delete'?'_bulk-delete':operation?'_'+operation:''),entity);
+ await commit(env.DB,expected,[bulkPut(env.DB,entries),...extra],actor.id,method+'_'+resource+(resource==='appointments'&&(id==='bulk-delete'||id==='batch-update')?'_'+id:operation?'_'+operation:''),entity);
  // 無効にしたスタッフの証明書は D1 で失効済み。Cloudflare 側の失効は失敗しても保存結果は変えない。
  if(revokeLater.length)await revokeAtCloudflare(env,revokeLater);
  return json({ok:true,revision:expected+1,id:entity,...(temporary?{temporaryPassword:temporary.password,temporaryExpires:temporary.expires}:{})});
