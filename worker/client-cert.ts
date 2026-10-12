@@ -5,7 +5,7 @@ export interface ClientCertificate {certPresented?:string;certVerified?:string;c
 export type CertificateRequest=Request & {cf?:{tlsClientAuth?:ClientCertificate}};
 const fingerprint=(value:string)=>value.replaceAll(':','').toLowerCase();
 
-export function requireClientCertificate(req:CertificateRequest,env:Env){
+export async function requireClientCertificate(req:CertificateRequest,env:Env){
  const url=new URL(req.url);
  // This exception only works in the loopback HTTP development server, never at Cloudflare.
  if(env.MTLS_MODE==='local'){
@@ -17,5 +17,9 @@ export function requireClientCertificate(req:CertificateRequest,env:Env){
  assert(env.MTLS_HOST&&/^[a-z0-9.-]+$/.test(env.MTLS_HOST)&&env.APP_ORIGIN===`https://${env.MTLS_HOST}`&&allowed.length>0&&allowed.every(v=>/^[a-f0-9]{64}$/.test(v)),503,'証明書認証の設定が必要です。');
  assert(url.protocol==='https:'&&url.host===env.MTLS_HOST,403,'クライアント証明書が必要です。');
  const cert=req.cf?.tlsClientAuth;
- assert(cert?.certPresented==='1'&&cert.certVerified==='SUCCESS'&&cert.certRevoked==='0'&&typeof cert.certFingerprintSHA256==='string'&&allowed.includes(fingerprint(cert.certFingerprintSHA256)),403,'クライアント証明書が必要です。');
+ assert(cert?.certPresented==='1'&&cert.certVerified==='SUCCESS'&&cert.certRevoked==='0'&&typeof cert.certFingerprintSHA256==='string'&&/^[a-f0-9]{64}$/.test(fingerprint(cert.certFingerprintSHA256)),403,'クライアント証明書が必要です。');
+ // 設定の許可リストは管理者端末の非常用。それ以外はスタッフ画面で発行し、失効しておらず持ち主が有効な証明書だけを通す。
+ const presented=fingerprint(cert.certFingerprintSHA256);if(allowed.includes(presented))return;
+ const issued=await env.DB?.prepare("SELECT 1 AS ok FROM device_certificates c JOIN records r ON r.id=c.staff_id AND r.kind='staff' WHERE c.fingerprint=? AND c.revoked_at IS NULL AND json_extract(r.data,'$.active')=1").bind(presented).first();
+ assert(issued,403,'クライアント証明書が必要です。');
 }

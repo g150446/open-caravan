@@ -5,3 +5,14 @@
 .detail-section>.text-button{display:block;margin-top:10px}
 
 .visit-facts{display:flex;flex-wrap:wrap;gap:5px;margin:7px 0 3px}.visit-facts span,.residence-badge{display:inline-block;padding:3px 8px;border-radius:5px;background:#eef4f2;color:#47645b;font-size:11px;font-weight:700}.visit-facts span:first-child{background:#edf3fb;color:#4d6583}
+.certificates .certificate-list{list-style:none;margin:0 0 12px;padding:0}
+.certificates .certificate-list li{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 0;border-bottom:1px solid #edf2f0}
+.certificates .certificate-list li span{display:flex;flex-direction:column;gap:2px}
+.certificates .certificate-list small{color:#71878a}
+.certificates .certificate-list li.revoked{opacity:.55}
+.certificates .issue-row{display:flex;gap:8px;flex-wrap:wrap}
+.certificates .issue-row input{flex:1;min-width:180px}
+.certificates .issued{background:#eef7f3;border:1px solid #cfe5db;border-radius:8px;padding:12px 14px;margin-bottom:12px}
+.certificates .issued p{margin:6px 0}
+.certificates .password-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.certificates .password-row code{font-size:17px;letter-spacing:.06em;background:#fff;border:1px solid #cfe5db;border-radius:6px;padding:6px 10px;user-select:all}
