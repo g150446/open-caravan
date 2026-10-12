@@ -28,7 +28,7 @@ async function estimateRoute(api:Api,items:Appointment[],masters:Masters,setting
  const {visits,manual}=visitsOf(items,masters),byId=new Map(visits.map(v=>[v.id,v])),chosen=ids.map(id=>byId.get(id)!).filter(Boolean);
  const found=await locate(api,[settings.officeAddress,...chosen.filter(v=>!manual.has(v.id)).map(v=>v.address)]);
  const office=parseLocation(settings.officeLocation)??found.get(settings.officeAddress)??null;
- if(!office)throw new Error('事業所の位置が分かりません。スタッフ管理の「事業所」で位置（緯度, 経度）を入力してください。');
+ if(!office)throw new Error('事業所の位置が分かりません。基本設定の「事業所」で位置（緯度, 経度）を入力してください。');
  const at=(v:Visit)=>manual.get(v.id)??found.get(v.address)??null,located=chosen.filter(v=>at(v)),stops=groupStops(located),points=[office,...stops.map(s=>at(s.visits[0])!)];
  const legs=points.map((p,i)=>estimateLeg(p,points[i+1]??office,settings)).slice(0,stops.length+1);
  return {stops:stops.map(s=>({ids:s.visits.map(v=>v.id),address:s.address})),legs,skipped:[],map:null,points,estimated:true,unlocated:chosen.filter(v=>!at(v)).map(v=>v.id)};
@@ -100,7 +100,7 @@ export function RouteView({heading,staffLabel,items,masters,settings,api,onBack,
   <h1 className="route-title">{heading}のルート{done&&<span className="route-total">（合計時間：{estimate?'約':''}{total.minutes}分 / 合計距離：{estimate?'約':''}{formatKm(total.meters)}）</span>}</h1>
   <p className="route-staff">{staffLabel}</p>
   <Options mode={mode} onMode={MD} highway={highway} onHighway={H} estimate={estimate}/>
-  {!settings.officeAddress&&<p className="notice-inline">事業所の住所が未登録です。管理者がスタッフ管理の「事業所」で登録すると、ルートを計算できます。</p>}
+  {!settings.officeAddress&&<p className="notice-inline">事業所の住所が未登録です。管理者が基本設定の「事業所」で登録すると、ルートを計算できます。</p>}
   {route.error&&<p className="error" role="alert">{route.error}</p>}
   {!visits.length&&<p className="empty-route">住所のある訪問予定がありません。</p>}
   {views.map(({seg,r,stops,t},i)=>{const color=townColors(stops);return <section className="route-segment" key={i}>
@@ -159,7 +159,7 @@ export function RouteEditor({heading,staffLabel,items,masters,settings,api,revis
   <h1 className="route-title">{heading}のルート一括変更{t&&<span className="route-total">（合計時間：{estimate?'約':''}{t.totalMinutes}分 / 合計距離：{estimate?'約':''}{formatKm(t.totalMeters)}）</span>}</h1>
   <p className="route-staff">{staffLabel}</p>
   <Options highway={highway} onHighway={H} estimate={estimate}/>
-  {!settings.officeAddress&&<p className="notice-inline">事業所の住所が未登録です。管理者がスタッフ管理の「事業所」で登録すると、ルートを計算できます。</p>}
+  {!settings.officeAddress&&<p className="notice-inline">事業所の住所が未登録です。管理者が基本設定の「事業所」で登録すると、ルートを計算できます。</p>}
   {route.error&&<p className="error" role="alert">{route.error}</p>}{error&&<p className="error" role="alert">{error}</p>}{info&&<p className="notice-inline" role="status">{info}</p>}
   <section className="route-segment">
    <div className="route-flow route-edit-flow">

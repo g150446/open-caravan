@@ -36,7 +36,7 @@ async function staticMap(key:string,polyline:string,office?:LatLng,stops:(LatLng
 export async function routes(env:Env,actor:Actor,body:Record<string,unknown>){
  assert(env.GOOGLE_MAPS_API_KEY,503,'地図の設定が必要です（GOOGLE_MAPS_API_KEY）。');
  const {appointmentIds,avoidHighways}=schema.parse(body);assert(new Set(appointmentIds).size===appointmentIds.length,400,'同じ予定が含まれています。');
- const settings=await getSettings(env.DB);assert(settings.officeAddress,400,'スタッフ管理で事業所の住所を登録してください。');
+ const settings=await getSettings(env.DB);assert(settings.officeAddress,400,'基本設定で事業所の住所を登録してください。');
  const visits:Visit[]=[],skipped:string[]=[];
  for(const id of appointmentIds){
   const a=await get(env.DB,id,'appointments');assert(a&&!a.cancelled,404,'予定が見つかりません。再読込してください。');
