@@ -26,7 +26,7 @@ export async function imports(env:Env,actor:Actor,kind:string,operation:string,b
  for(const raw of body.rows){assert(Array.isArray(raw)&&raw.every(x=>typeof x==='string'),400,'CSVの行が不正です。');const r=raw as string[];const item:ImportRow={line:accumulated.length+rows.length+2,label:r[0]||r[1],action:'追加',errors:[]};if(r.length!==csvHeaders[kind].length)item.errors.push('列数が一致しません');
  if(kind==='patients'){
  const existing=patients.find(p=>p.number===r[0]),facility=facilities.find(f=>f.name===r[4]);if(r[4]&&!facility)item.errors.push('施設を先に登録してください');if(seen.has(r[0]))item.errors.push('患者番号がCSV内で重複しています');seen.add(r[0]);
- const result=patientSchema.safeParse({number:r[0],name:r[1],kana:r[2],address:r[3],facilityId:facility?.id??null,movacalUrl:r[5],handover:r[6],visitFrequency:existing?.visitFrequency??'',active:existing?.active??true});
+ const result=patientSchema.safeParse({number:r[0],name:r[1],kana:r[2],address:r[3],facilityId:facility?.id??null,movacalUrl:r[5],handover:r[6],visitFrequency:existing?.visitFrequency??'',location:existing?.location??'',active:existing?.active??true});
  if(!result.success)item.errors.push(...result.error.issues.map(x=>x.message));else{item.entry={kind,doc:{...result.data,id:existing?.id??crypto.randomUUID(),version:existing?existing.version+1:1}};item.action=existing?'更新':'追加';}
  }else{
  const patient=patients.find(p=>p.number===r[0]&&p.active);if(r[0]&&!patient)item.errors.push('患者番号がありません');const logins=(r[5]??'').split('|').filter(Boolean),staffIds=logins.map(l=>staff.find(s=>s.login===l&&s.active)?.id);if(staffIds.some(x=>!x))item.errors.push('有効な担当者IDがありません');if(new Set(logins).size!==logins.length)item.errors.push('担当者が重複しています');

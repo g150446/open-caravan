@@ -47,5 +47,34 @@ export function autoAdjust(stops:Stop[],legs:Leg[],departure:number,margin:numbe
 
 // 地図のピンと画面の番号をそろえる（静止画のラベルは1文字なので、10か所目からは A, B, …）。
 export const stopLabel=(i:number)=>i<9?String(i+1):String.fromCharCode(65+i-9);
-export const navUrl=(from:string,to:string)=>'https://www.google.com/maps/dir/?'+new URLSearchParams({api:'1',origin:from,destination:to,travelmode:'driving'});
+// Google マップの経路URL（鍵は不要。利用者が押したときだけ開く）。経由地は Google の上限に合わせて9か所まで。
+export const navUrl=(from:string,to:string,waypoints:string[]=[])=>'https://www.google.com/maps/dir/?'+new URLSearchParams({api:'1',origin:from,destination:to,...(waypoints.length?{waypoints:waypoints.join('|')}:{}),travelmode:'driving'});
 export const formatKm=(meters:number)=>(meters/1000).toFixed(1)+'km';
+
+// ここから下は Google を使わない見積もり用。位置は {lat,lng}（度）。
+export interface Point {lat:number;lng:number;}
+// 「43.0597, 141.7790」（Google マップで右クリックしてコピーした形）を読む。日本の範囲だけ受け付ける。
+export function parseLocation(text:string):Point|null{
+ const m=text.trim().match(/^(-?\d{1,3}(?:\.\d+)?)\s*[,，、]\s*(-?\d{1,3}(?:\.\d+)?)$/);if(!m)return null;
+ const lat=Number(m[1]),lng=Number(m[2]);return lat>=20&&lat<=46&&lng>=122&&lng<=154?{lat,lng}:null;
+}
+export function distanceMeters(a:Point,b:Point){
+ const r=Math.PI/180,dLat=(b.lat-a.lat)*r,dLng=(b.lng-a.lng)*r,h=Math.sin(dLat/2)**2+Math.cos(a.lat*r)*Math.cos(b.lat*r)*Math.sin(dLng/2)**2;
+ return 2*6371000*Math.asin(Math.sqrt(h));
+}
+// 道のりは直線距離の detourFactor 倍、速さは speedKmh で見積もる。分は切り上げ。
+export function estimateLeg(a:Point,b:Point,{detourFactor,speedKmh}:{detourFactor:number;speedKmh:number}):Leg{
+ const meters=Math.round(distanceMeters(a,b)*detourFactor);return {meters,minutes:Math.ceil(meters/1000/speedKmh*60)};
+}
+// 事業所から出て事業所へ戻る一周が短くなる順（最近傍法のあと 2-opt）。戻り値は points の添字の並び。
+export function nearestOrder(office:Point,points:Point[]):number[]{
+ const order:number[]=[],left=new Set(points.map((_,i)=>i));let at=office;
+ while(left.size){let best=-1;for(const i of left)if(best<0||distanceMeters(at,points[i])<distanceMeters(at,points[best]))best=i;order.push(best);left.delete(best);at=points[best];}
+ const p=(k:number)=>k<0||k>=order.length?office:points[order[k]];
+ for(let improved=true;improved;){improved=false;
+  for(let i=0;i<order.length-1;i++)for(let j=i+1;j<order.length;j++){
+   const before=distanceMeters(p(i-1),p(i))+distanceMeters(p(j),p(j+1)),after=distanceMeters(p(i-1),p(j))+distanceMeters(p(i),p(j+1));
+   if(after<before-1e-6){order.splice(i,j-i+1,...order.slice(i,j+1).reverse());improved=true;}
+  }}
+ return order;
+}

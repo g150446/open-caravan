@@ -11,13 +11,13 @@ import {csvHeaders,encodeCsv} from '../src/lib/csv';
 import {imports} from './imports';
 import {requireClientCertificate} from './client-cert';
 import {certificates,activeCertificateIds,revokeAllStatement,revokeAtCloudflare} from './certificates';
-import {routes,getSettings,saveSettings} from './routes';
+import {routes,getSettings,saveSettings,geoDictionary,geocodes} from './routes';
 const json=(body:unknown,status=200,headers:Record<string,string>={})=>new Response(JSON.stringify(body),{status,headers:{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store',...headers}});
 const security:Record<string,string>={'X-Content-Type-Options':'nosniff','X-Frame-Options':'DENY','Referrer-Policy':'no-referrer','Permissions-Policy':'camera=(), microphone=(), geolocation=()','Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"};
 async function bodyOf(req:Request){assert(Number(req.headers.get('content-length')??0)<=2000000,413,'データが大きすぎます。');const text=await req.text();assert(new TextEncoder().encode(text).length<=2000000,413,'データが大きすぎます。');let b:Record<string,unknown>;try{b=JSON.parse(text);}catch{throw new ApiError(400,'JSONが不正です。');}assert(b&&typeof b==='object'&&!Array.isArray(b),400,'送信データが不正です。');return b;}
 function version(doc:Doc,b:Record<string,unknown>){assert(b.version===doc.version,409,'別のスタッフが更新しました。再読込してください。');}
 async function api(req:Request,env:Env,url:URL):Promise<Response>{
- const [resource,id,operation,...rest]=url.pathname.slice(5).split('/');const certificateRoute=resource==='staff'&&!!id&&operation==='certificates'&&rest.length<=1;assert(!rest.length||certificateRoute,404,'APIがありません。');const method=req.method;
+ const [resource,id,operation,...rest]=url.pathname.slice(5).split('/');const certificateRoute=resource==='staff'&&!!id&&operation==='certificates'&&rest.length<=1,geoRoute=resource==='geo';assert(!rest.length||certificateRoute||geoRoute,404,'APIがありません。');const method=req.method;
  if(resource==='health'){assert(method==='GET',405,'操作できません。');await revision(env.DB);return json({status:'ok'});}
  if(resource==='auth'&&id==='login'&&method==='POST'){const r=await login(req,env,await bodyOf(req));return json(r.body,200,{'Set-Cookie':r.cookie});}
  if(resource==='setup'&&!operation&&method==='POST'){if(id==='check')return json(await setupCheck(req,env,await bodyOf(req)));if(!id)return json(await setup(req,env,await bodyOf(req)));}
@@ -27,9 +27,11 @@ async function api(req:Request,env:Env,url:URL):Promise<Response>{
  if(resource==='auth'&&id==='password'&&method==='POST')return json(await changePassword(env,actor,session.id,await bodyOf(req)));
  // 仮パスワードのままでは、自分のパスワードを設定するまで他のAPIを使えない。
  assert(!actor.mustChangePassword,403,'パスワードを設定してください。');
+ if(geoRoute){assert(method==='GET',405,'操作できません。');return geoDictionary(url.pathname.slice('/api/geo/'.length),url.searchParams);}
+ if(resource==='geocodes'&&!id)return json(await geocodes(env,actor,method,method==='POST'?await bodyOf(req):null));
  if(certificateRoute)return json(await certificates(req,env,actor,id,rest[0],method==='POST'?await bodyOf(req):null));
  if(resource==='changes'&&method==='GET')return json(await revision(env.DB));
- if(resource==='bootstrap'&&method==='GET')return json(await snapshot(env.DB,async()=>{const [staff,patients,facilities,settings]=await Promise.all([list(env.DB,'staff'),list(env.DB,'patients'),list(env.DB,'facilities'),getSettings(env.DB)]);return {staff:staff.map(safeStaff),patients,facilities,settings};}));
+ if(resource==='bootstrap'&&method==='GET')return json(await snapshot(env.DB,async()=>{const [staff,patients,facilities,settings]=await Promise.all([list(env.DB,'staff'),list(env.DB,'patients'),list(env.DB,'facilities'),getSettings(env.DB)]);return {staff:staff.map(safeStaff),patients,facilities,settings:{...settings,routeMode:env.GOOGLE_MAPS_API_KEY?'google':'estimate'}};}));
  if(resource==='appointments'&&method==='GET'){
  if(id)return json(await snapshot(env.DB,async()=>{const a=await get(env.DB,id,'appointments');assert(a&&!a.cancelled,404,'予定が見つかりません。');let previous:Doc[]=[],next:Doc[]=[];if(a.patientId){previous=(await list(env.DB,'appointments','AND patient_id=? AND cancelled=0 AND starts_at<? ORDER BY starts_at DESC LIMIT 3',[a.patientId,a.startsAt]));next=await list(env.DB,'appointments','AND patient_id=? AND cancelled=0 AND starts_at>? ORDER BY starts_at LIMIT 3',[a.patientId,a.startsAt]);}return {appointment:a,previous,next,series:a.seriesId?await get(env.DB,String(a.seriesId),'series'):null};}));
  const from=keySchema.parse(url.searchParams.get('from')),to=keySchema.parse(url.searchParams.get('to'));assert(to>from&&to<=addDays(from,370),400,'取得期間は1〜370日で指定してください。');

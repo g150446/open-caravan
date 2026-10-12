@@ -7,10 +7,10 @@ import {takeAttempt} from './auth';
 import {assert,ApiError} from '../src/lib/errors';
 import {groupStops,stopLabel,type Visit} from '../src/lib/route';
 
-export interface Settings {officeName:string;officeAddress:string;marginMinutes:number;version:number;}
+export interface Settings {officeName:string;officeAddress:string;marginMinutes:number;officeLocation:string;detourFactor:number;speedKmh:number;version:number;}
 export async function getSettings(db:Database):Promise<Settings>{
  const row=await db.prepare("SELECT data,version FROM settings WHERE id='office'").first<{data:string;version:number}>();
- return {officeName:'',officeAddress:'',marginMinutes:10,...(row?JSON.parse(row.data):{}),version:row?.version??0};
+ return {officeName:'',officeAddress:'',marginMinutes:10,officeLocation:'',detourFactor:1.4,speedKmh:30,...(row?JSON.parse(row.data):{}),version:row?.version??0};
 }
 export const saveSettings=(db:Database,s:Omit<Settings,'version'>,version:number)=>db.prepare("INSERT INTO settings(id,data,version) VALUES('office',?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data,version=excluded.version").bind(JSON.stringify(s),version);
 
@@ -52,5 +52,27 @@ export async function routes(env:Env,actor:Actor,body:Record<string,unknown>){
  if(!r.ok||!route?.legs||route.legs.length!==stops.length+1){console.error('routes_api_failed',r.status);throw new ApiError(502,'ルートの計算に失敗しました。住所が正しいか確認してください。');}
  const legs=route.legs.map(l=>({minutes:Math.round(parseFloat(l.duration??'0')/60),meters:l.distanceMeters??0}));
  const map=await staticMap(env.GOOGLE_MAPS_API_KEY,route.polyline?.encodedPolyline??'',route.legs[0].startLocation?.latLng,route.legs.slice(0,-1).map(l=>l.endLocation?.latLng));
- return {stops:stops.map(s=>({ids:s.visits.map(v=>v.id),address:s.address})),legs,skipped,map};
+ // 「近い順に並べる」用に、事業所と各訪問先の位置も返す。
+ const points=[route.legs[0].startLocation?.latLng,...route.legs.slice(0,-1).map(l=>l.endLocation?.latLng)].map(p=>p?{lat:p.latitude,lng:p.longitude}:null);
+ return {stops:stops.map(s=>({ids:s.visits.map(v=>v.id),address:s.address})),legs,skipped,map,points};
+}
+
+// キーがないときの見積もり用。住所データ（Geolonia の japanese-addresses-v2）の町丁目までの辞書を、解析せずにそのまま中継する。
+// ブラウザの CSP を広げずに済み、Worker の CPU もほとんど使わない。番地の辞書（大きい）は中継しない。
+const GEO_ORIGIN='https://japanese-addresses-v2.geoloniamaps.com/api/';
+export async function geoDictionary(path:string,search:URLSearchParams){
+ let parts:string[];try{parts=path.split('/').map(decodeURIComponent);}catch{throw new ApiError(404,'辞書がありません。');}
+ assert(parts.join('/')==='ja.json'||parts.length===3&&parts[0]==='ja'&&/^[^/.]{2,4}$/.test(parts[1])&&/^[^/.]{1,40}\.json$/.test(parts[2]),404,'辞書がありません。');
+ const v=search.get('v'),url=GEO_ORIGIN+parts.map(encodeURIComponent).join('/')+(v&&/^\d{1,12}$/.test(v)?'?v='+v:'');
+ const r=await fetch(url,{cf:{cacheTtl:604800,cacheEverything:true}} as RequestInit);
+ if(!r.ok)throw new ApiError(r.status===404?404:502,'住所データを取得できませんでした。');
+ return new Response(r.body,{headers:{'Content-Type':'application/json; charset=utf-8','Cache-Control':'private, max-age=86400'}});
+}
+const geocodeItems=z.array(z.object({address:z.string().trim().min(1).max(500),lat:z.number().min(20).max(46),lng:z.number().min(122).max(154),level:z.number().int().min(1).max(8)})).min(1).max(100);
+export async function geocodes(env:Env,actor:Actor,method:string,body:Record<string,unknown>|null){
+ if(method==='GET')return {geocodes:(await env.DB.prepare('SELECT address,lat,lng,level FROM geocodes').all()).results};
+ assert(method==='POST',405,'操作できません。');
+ const items=geocodeItems.parse(body?.items);await takeAttempt(env,'geocode:'+actor.id,300);const now=new Date().toISOString();
+ await env.DB.batch(items.map(i=>env.DB.prepare('INSERT INTO geocodes(address,lat,lng,level,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(address) DO UPDATE SET lat=excluded.lat,lng=excluded.lng,level=excluded.level,updated_at=excluded.updated_at').bind(i.address,i.lat,i.lng,i.level,now)));
+ return {ok:true};
 }

@@ -35,10 +35,12 @@ test('routes are computed from D1 addresses only, grouped by facility, without p
   await f.add(a,'09:00','09:30');await f.add(b,'10:00','10:30');await f.add(c,'10:30','11:00');await f.add(d,'11:00','11:30');
   const ids=(await f.onDay()).map(x=>x.id);
   assert.equal((await f.call('routes','POST',{appointmentIds:ids,avoidHighways:true})).status,400,'office address is required first');
-  const bootstrap=(await f.call('bootstrap')).data.data;assert.deepEqual({...bootstrap.settings},{officeName:'',officeAddress:'',marginMinutes:10,version:0});
+  const bootstrap=(await f.call('bootstrap')).data.data;assert.deepEqual({...bootstrap.settings},{officeName:'',officeAddress:'',marginMinutes:10,officeLocation:'',detourFactor:1.4,speedKmh:30,version:0,routeMode:'google'});
   assert.equal((await f.call('settings','PATCH',{officeName:'テスト診療所',officeAddress:'北海道テスト町9-9',marginMinutes:5,version:0})).status,200);
   assert.equal((await f.call('settings','PATCH',{officeName:'x',officeAddress:'y',marginMinutes:5,version:0})).status,409);
   const r=await f.call('routes','POST',{appointmentIds:ids,avoidHighways:true});assert.equal(r.status,200,JSON.stringify(r.data));
+  assert.deepEqual(r.data.points.map((p:any)=>[p.lat,p.lng].map(x=>x.toFixed(2)).join()),['43.00,141.70','43.01,141.71','43.02,141.72']);
+  assert.equal((await f.call('bootstrap')).data.data.settings.routeMode,'google');
   assert.deepEqual(r.data.stops.map((s:any)=>s.ids.length),[1,2]);assert.deepEqual(r.data.skipped,[ids[3]]);
   assert.deepEqual(r.data.legs.map((l:any)=>l.minutes),[10,11,12]);assert.match(r.data.map,/^data:image\/jpeg;base64,/);
   const routes=g.calls.find(c=>c.url.includes('routes.googleapis.com'))!;
@@ -63,4 +65,34 @@ test('routes need the key, a real appointment, and stay within the rate limit',a
   assert.equal((await f.call('routes','POST',{appointmentIds:[visit.id],avoidHighways:false})).status,429);
   assert.equal((await f.call('routes','GET')).status,405);
  }finally{g.restore();}
+});
+
+test('without a key: estimate mode, the dictionary relay only passes town-level files, and positions are cached',async()=>{
+ const f=await fixture(),calls:string[]=[],original=globalThis.fetch;
+ globalThis.fetch=(async(input:string|URL|Request)=>{const url=String(input);calls.push(url);return url.startsWith('https://japanese-addresses-v2.geoloniamaps.com/api/')?Response.json({ok:true}):new Response('',{status:404});}) as typeof fetch;
+ try{
+  const settings=(await f.call('bootstrap')).data.data.settings;assert.equal(settings.routeMode,'estimate');assert.equal(settings.detourFactor,1.4);assert.equal(settings.speedKmh,30);
+  assert.equal((await f.call('settings','PATCH',{officeName:'',officeAddress:'北海道テスト町9-9',marginMinutes:10,officeLocation:'43.05, 141.77',detourFactor:1.3,speedKmh:25,version:0})).status,200);
+  assert.equal((await f.call('settings','PATCH',{officeName:'',officeAddress:'',marginMinutes:10,officeLocation:'51.5, -0.1',version:1})).status,400);
+  const raw=async(path:string)=>(await worker.fetch(new Request(f.env.APP_ORIGIN+'/api/geo/'+path,{headers:{Origin:f.env.APP_ORIGIN,Cookie:(f as any).cookie??''}}),f.env));
+  const geo=async(path:string)=>(await f.call('geo/'+path)).status;
+  assert.equal(await geo('ja.json'),200);
+  assert.equal(await geo(encodeURIComponent('北海道')+'/x.json'),404);
+  assert.equal(await geo('ja/'+encodeURIComponent('北海道')+'/'+encodeURIComponent('夕張郡栗山町')+'.json?v=1735102668'),200);
+  assert.equal(await geo('ja/'+encodeURIComponent('北海道')+'/'+encodeURIComponent('夕張郡栗山町-地番')+'.txt'),404);
+  assert.equal(await geo('ja/'+encodeURIComponent('北海道')+'/..%2F..%2Fx.json'),404);
+  assert.equal(await geo('ja/'+encodeURIComponent('北海道')+'/a/b.json'),404);
+  assert.equal((await raw('ja.json')).status,401,'needs a session');
+  assert.deepEqual(calls.map(decodeURIComponent),['https://japanese-addresses-v2.geoloniamaps.com/api/ja.json','https://japanese-addresses-v2.geoloniamaps.com/api/ja/北海道/夕張郡栗山町.json?v=1735102668']);
+  assert.equal((await f.call('geocodes','POST',{items:[{address:'北海道テスト町1-1',lat:43.06,lng:141.78,level:3}]})).status,200);
+  assert.equal((await f.call('geocodes','POST',{items:[{address:'北海道テスト町1-1',lat:43.07,lng:141.79,level:3}]})).status,200);
+  assert.equal((await f.call('geocodes','POST',{items:[{address:'海外',lat:51.5,lng:-0.1,level:3}]})).status,400);
+  assert.equal((await f.call('geocodes','POST',{items:[]})).status,400);
+  assert.deepEqual((await f.call('geocodes')).data.geocodes,[{address:'北海道テスト町1-1',lat:43.07,lng:141.79,level:3}]);
+  const p=await f.patient('L1','架空 位置','北海道テスト町1-1');assert.equal(p.length>0,true);
+  assert.equal((await f.call('patients','POST',{number:'L2',name:'架空 誤り',kana:'',address:'',movacalUrl:'',facilityId:null,handover:'',visitFrequency:'',location:'東京'})).status,400);
+  assert.equal((await f.call('patients','POST',{number:'L3',name:'架空 手入力',kana:'',address:'',movacalUrl:'',facilityId:null,handover:'',visitFrequency:'',location:'43.1, 141.8'})).status,200);
+  assert.equal((await f.call('bootstrap')).data.data.patients.find((x:any)=>x.number==='L3').location,'43.1, 141.8');
+  assert.equal((await f.call('routes','POST',{appointmentIds:['x'],avoidHighways:false})).status,503,'the server-side route stays Google-only');
+ }finally{globalThis.fetch=original;}
 });
