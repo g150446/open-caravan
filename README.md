@@ -143,6 +143,8 @@ defaults write com.google.Chrome AutoSelectCertificateForUrls -array -string \
 
 利用者向けのインストール手順（Mac・Windows・Android・iPhone）: https://g150446.github.io/open-caravan/ （`docs/index.html`、GitHub Pagesで公開）
 
+訪問ルートの使い方: https://g150446.github.io/open-caravan/route.html （`docs/route.html`。ルート画面の「？ 使い方」から開けます）
+
 ### スタッフ画面から発行・失効
 
 管理者はスタッフ情報の「端末証明書」欄で、端末名（例: `tanaka-iphone`）を入れて「証明書を発行」を押します。新規登録した直後もそのまま発行へ進めます。

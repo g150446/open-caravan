@@ -10,6 +10,8 @@ import {Field} from './Forms';
 interface Props {heading:string;staffLabel:string;items:Appointment[];masters:Masters;settings:Settings;api:Api;onBack:()=>void;}
 const parseClock=(v:string)=>/^\d{2}:\d{2}$/.test(v)?Number(v.slice(0,2))*60+Number(v.slice(3)):NaN;
 const estimateMode=(s:Settings)=>s.routeMode==='estimate';
+// 使い方の説明（GitHub Pages の docs/route.html）。
+const help=(section:string)=><a className="route-help" href={'https://g150446.github.io/open-caravan/route.html#'+section} target="_blank" rel="noopener noreferrer">？ 使い方</a>;
 
 // 患者の住所（なければ施設の住所）がある訪問だけを経路に入れる。一般予定と住所のない予定は別に並べる。
 // 手入力の地図の位置は、住所を使った側（患者か施設）のものを使う。
@@ -96,7 +98,7 @@ export function RouteView({heading,staffLabel,items,masters,settings,api,onBack,
  const done=views.length>0&&views.every(v=>v.t),total=views.reduce((n,v)=>({minutes:n.minutes+(v.t?.totalMinutes??0),meters:n.meters+(v.t?.totalMeters??0)}),{minutes:0,meters:0});
  const unlocated=views.flatMap(v=>v.r?.unlocated??[]).map(id=>({a:items.find(a=>a.id===id)!,reason:'位置が分からない（患者・施設情報で地図の位置を入力）'}));
  return <main className="route-page">
-  <div className="route-toolbar"><button className="text-button back" onClick={onBack}>‹ カレンダーに戻る</button><span className="spacer"/><button onClick={()=>print()}>印刷する</button><button className="primary" onClick={onEdit} disabled={!visits.length}>ルートを一括変更する</button></div>
+  <div className="route-toolbar"><button className="text-button back" onClick={onBack}>‹ カレンダーに戻る</button>{help('view')}<span className="spacer"/><button onClick={()=>print()}>印刷する</button><button className="primary" onClick={onEdit} disabled={!visits.length}>ルートを一括変更する</button></div>
   <h1 className="route-title">{heading}のルート{done&&<span className="route-total">（合計時間：{estimate?'約':''}{total.minutes}分 / 合計距離：{estimate?'約':''}{formatKm(total.meters)}）</span>}</h1>
   <p className="route-staff">{staffLabel}</p>
   <Options mode={mode} onMode={MD} highway={highway} onHighway={H} estimate={estimate}/>
@@ -155,7 +157,7 @@ export function RouteEditor({heading,staffLabel,items,masters,settings,api,revis
  }
  let index=0;
  return <form className="route-page route-editor" onSubmit={save}>
-  <div className="route-toolbar"><button type="button" className="text-button back" onClick={onBack}>‹ 保存せずに戻る</button><span className="spacer"/><button className="primary" disabled={busy}>{busy?'保存中…':'変更を保存する'}</button></div>
+  <div className="route-toolbar"><button type="button" className="text-button back" onClick={onBack}>‹ 保存せずに戻る</button>{help('edit')}<span className="spacer"/><button className="primary" disabled={busy}>{busy?'保存中…':'変更を保存する'}</button></div>
   <h1 className="route-title">{heading}のルート一括変更{t&&<span className="route-total">（合計時間：{estimate?'約':''}{t.totalMinutes}分 / 合計距離：{estimate?'約':''}{formatKm(t.totalMeters)}）</span>}</h1>
   <p className="route-staff">{staffLabel}</p>
   <Options highway={highway} onHighway={H} estimate={estimate}/>
