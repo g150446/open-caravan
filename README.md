@@ -123,7 +123,8 @@ defaults write com.google.Chrome AutoSelectCertificateForUrls -array -string \
 `scripts/device-cert.mjs` は、鍵とCSRの作成、Cloudflareでの発行、Android/macOS/iOS/Windows共通の `.p12` とパスワードの作成、`wrangler.local.jsonc` の `MTLS_ALLOWED_SHA256` への追加をまとめて行います。証明書は人ではなく端末ごとに発行します（スタッフの識別はログインで行います）。
 
 ```sh
-# .env.local（Git対象外）に CLOUDFLARE_API_TOKEN=... を書くと自動で読み込みます。
+# .env.device-cert（Git対象外）に CLOUDFLARE_API_TOKEN=... を書くと自動で読み込みます。
+# .env.local には書かないでください（wranglerが読み込み、deployがこのトークンで失敗します）。
 # 権限: 対象ゾーンの「SSL および証明書: 編集」と「ゾーン: 読み取り」。未設定ならCSRを表示し、PEMの貼り付けを待ちます。
 npm run device-cert -- issue tanaka-iphone tanaka-pc sato-android sato-pc
 npm run device-cert -- list             # 有効／失効／未反映を表示
