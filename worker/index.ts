@@ -47,8 +47,16 @@ async function api(req:Request,env:Env,url:URL):Promise<Response>{
  else if(method==='DELETE'&&!operation){version(a,b);const scope=z.enum(['one','future']).parse(b.scope);entries=await remove(env.DB,a,scope);}
  else throw new ApiError(405,'操作できません。');
  }
+ }else if(resource==='staff'&&id&&!operation&&method==='DELETE'){
+ // 削除済みにして一覧と選択肢から外す。過去の予定や履歴に名前を残すため、データ自体は消さずログインIDだけ空ける。
+ assert(actor.role==='ADMIN',403,'管理者のみ操作できます。');assert(id!==actor.id,400,'自分のアカウントは削除できません。');
+ const current=await get(env.DB,id,'staff');assert(current&&!current.deleted,404,'スタッフが見つかりません。');version(current,b);
+ const future=await env.DB.prepare("SELECT count(*) AS n FROM records WHERE kind='appointments' AND cancelled=0 AND starts_at>=? AND EXISTS(SELECT 1 FROM json_each(json_extract(data,'$.staffIds')) WHERE value=?)").bind(new Date().toISOString(),id).first<{n:number}>();
+ assert(!future?.n,409,`今後の予定が${future?.n}件あります。担当・同行を変更してから削除するか、停止してください。`);
+ const {passwordHash,...rest}=current;entries=[{kind:resource,doc:{...rest,active:false,deleted:true,version:current.version+1}}];
+ revokeLater=await activeCertificateIds(env,id);extra.push(env.DB.prepare('DELETE FROM sessions WHERE staff_id=?').bind(id),revokeAllStatement(env,id));
  }else if(['patients','facilities','staff'].includes(resource)){
- assert(method==='POST'&&!id||method==='PATCH'&&id,405,'操作できません。');let current:Doc|null=null;if(id){current=await get(env.DB,id,resource);assert(current,404,'データがありません。');version(current,b);}const nextId=id??crypto.randomUUID();
+ assert(method==='POST'&&!id||method==='PATCH'&&id,405,'操作できません。');let current:Doc|null=null;if(id){current=await get(env.DB,id,resource);assert(current&&!current.deleted,404,'データがありません。');version(current,b);}const nextId=id??crypto.randomUUID();
  let data:Record<string,unknown>;
  if(resource==='patients'){
  if(operation==='handover'&&current)data={...current,handover:z.string().max(30000).parse(b.handover)};

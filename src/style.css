@@ -19,3 +19,5 @@
 .with-action{display:flex;gap:8px}
 .with-action input{flex:1;min-width:0}
 .with-action button{white-space:nowrap}
+.row-actions{white-space:nowrap}
+.row-actions button+button{margin-left:6px}
