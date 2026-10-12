@@ -1,4 +1,5 @@
-import {assert} from '../src/lib/errors';
+import {assert,ApiError} from '../src/lib/errors';
+import {takeAttempt,audit} from './auth';
 import type {Env} from './types';
 
 export interface ClientCertificate {certPresented?:string;certVerified?:string;certRevoked?:string;certFingerprintSHA256?:string;}
@@ -21,5 +22,14 @@ export async function requireClientCertificate(req:CertificateRequest,env:Env){
  // 設定の許可リストは管理者端末の非常用。それ以外はスタッフ画面で発行し、失効しておらず持ち主が有効な証明書だけを通す。
  const presented=fingerprint(cert.certFingerprintSHA256);if(allowed.includes(presented))return;
  const issued=await env.DB?.prepare("SELECT 1 AS ok FROM device_certificates c JOIN records r ON r.id=c.staff_id AND r.kind='staff' WHERE c.fingerprint=? AND c.revoked_at IS NULL AND json_extract(r.data,'$.active')=1").bind(presented).first();
- assert(issued,403,'クライアント証明書が必要です。');
+ if(!issued){await logRejected(env,presented).catch(()=>{});throw new ApiError(403,'クライアント証明書が必要です。');}
+}
+
+// 失効させた証明書などで来たアクセスを変更履歴に残す（持ち主が分かればその人として）。
+// 同じ証明書からは15分に3件までにして、変更履歴があふれないようにする。
+async function logRejected(env:Env,presented:string){
+ if(!env.DB)return;
+ try{await takeAttempt(env,'cert-log:'+presented.slice(0,16),3);}catch{return;}
+ const owner=await env.DB.prepare('SELECT staff_id FROM device_certificates WHERE fingerprint=?').bind(presented).first<{staff_id:string}>();
+ await audit(env,owner?.staff_id??'-','CERT_REJECTED',presented.slice(0,16)).run();
 }

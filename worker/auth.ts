@@ -38,6 +38,8 @@ export async function changePassword(env:Env,actor:Actor,sessionId:string,body:R
   catch(e){if(attempt>0||!(e instanceof ApiError&&e.status===409))throw e;}
  }
 }
+// 変更履歴に残す。ログインの成功・失敗や証明書の拒否のように、データの変更を伴わない出来事にも使う。
+export const audit=(env:Env,actor:string,action:string,entity:string)=>env.DB.prepare('INSERT INTO audit(id,actor_id,action,entity_id,created_at) VALUES(?,?,?,?,?)').bind(crypto.randomUUID(),actor,action,entity,new Date().toISOString());
 export function equal(a:string,b:string){if(a.length!==b.length)return false;let different=0;for(let i=0;i<a.length;i++)different|=a.charCodeAt(i)^b.charCodeAt(i);return different===0;}
 export function origin(req:Request,env:Env){assert(env.APP_ORIGIN && req.headers.get('origin')===env.APP_ORIGIN,403,'アクセス元が一致しません。');assert(req.headers.get('content-type')?.startsWith('application/json'),415,'JSONで送信してください。');}
 export async function authenticate(req:Request,env:Env,mutate=false){
@@ -59,12 +61,15 @@ export async function login(req:Request,env:Env,body:Record<string,unknown>){
  const staff=row?{...JSON.parse(row.data),id:row.id,version:row.version} as Actor:null;
  const hash=String(staff?.passwordHash??`pbkdf2-sha256:100000:${'0'.repeat(64)}:${'0'.repeat(64)}`);
  const salt=hash.split(':')[2];const candidate=await passwordHash(body.password,env.AUTH_PEPPER,salt);
- assert(staff?.active&&equal(candidate,hash),401,'IDまたはパスワードが違います。');
- assert(!staff.mustChangePassword||Date.parse(String(staff.temporaryExpires))>Date.now(),401,'仮パスワードの期限が切れています。管理者に再発行を依頼してください。');
+ // 失敗も記録する。存在しないIDのときは、入力された文字（パスワードの打ち間違いかもしれない）は残さない。
+ const failed=async(message:string)=>{await audit(env,staff?.id??'-','LOGIN_FAILED',staff?.id??'-').run();return new ApiError(401,message);};
+ if(!(staff?.active&&equal(candidate,hash)))throw await failed('IDまたはパスワードが違います。');
+ if(staff.mustChangePassword&&!(Date.parse(String(staff.temporaryExpires))>Date.now()))throw await failed('仮パスワードの期限が切れています。管理者に再発行を依頼してください。');
  const token=random(),csrf=random();await env.DB.batch([
  env.DB.prepare('DELETE FROM sessions WHERE expires<=?').bind(Date.now()),
  env.DB.prepare('DELETE FROM attempts WHERE reset_at<=?').bind(Date.now()),
- env.DB.prepare('INSERT INTO sessions(id,staff_id,csrf,expires) VALUES(?,?,?,?)').bind(await digest(token),staff.id,csrf,Date.now()+28800000)
+ env.DB.prepare('INSERT INTO sessions(id,staff_id,csrf,expires) VALUES(?,?,?,?)').bind(await digest(token),staff.id,csrf,Date.now()+28800000),
+ audit(env,staff.id,'LOGIN',staff.id)
  ]);
  return {body:{staff:safeStaff(staff),csrf},cookie:`${cookieName}=${token}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=28800`};
 }

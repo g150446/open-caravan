@@ -100,3 +100,21 @@ test('temporary passwords expire and admins can reissue them',async()=>{
  assert.equal((await f.call(admin,'staff/'+id,'PATCH',{...edited,name:'改名した看護師'})).status,200);
  assert.equal((await f.call(admin,'bootstrap')).data.data.staff.find((s:any)=>s.id===id).mustChangePassword,true);
 });
+
+test('logins, failed logins and logouts are recorded; only admins may import CSV or bulk-delete',async()=>{
+ const f=fixture(),admin=await f.setup();
+ const id=await enroll(f,admin,nurse,'nurse-password-long');
+ assert.equal(await f.login('nurse','wrong-password-long'),null);
+ assert.equal(await f.login('nobody','whatever-password'),null);
+ const session=(await f.login('nurse','nurse-password-long'))!;
+ assert.equal((await f.call(session,'imports/patients')).status,403);
+ assert.equal((await f.call(session,'imports/patients/start','POST',{})).status,403);
+ assert.equal((await f.call(session,'appointments/bulk-delete','POST',{items:[{id:'x',version:1}]})).status,403);
+ assert.equal((await f.call(session,'auth/logout','POST',{})).status,200);
+ const audit=(await f.call(admin,'audit')).data as any[],has=(action:string,actor:string)=>audit.some(a=>a.action===action&&a.actor_id===actor);
+ assert(has('LOGIN',id)&&has('LOGIN_FAILED',id)&&has('LOGIN_FAILED','-')&&has('LOGOUT',id)&&has('LOGIN',admin.id!));
+ // 存在しないIDでの失敗には、入力された文字を残さない。
+ assert(!JSON.stringify(audit).includes('nobody'));
+ const res=await worker.fetch(new Request('http://127.0.0.1:3000/'),{MTLS_MODE:'local',APP_ORIGIN:'http://127.0.0.1:3000'} as Env);
+ assert.equal(res.headers.get('strict-transport-security'),'max-age=31536000');
+});

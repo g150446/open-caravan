@@ -4,7 +4,7 @@ import type {Env,Actor,Doc} from './types';
 import {assert,ApiError} from '../src/lib/errors';
 import {appointmentSchema,facilitySchema,keySchema,patientSchema,settingsSchema,staffSchema,timeSchema} from '../src/lib/validation';
 import {addDays,dateKey,jstDate} from '../src/lib/date';
-import {authenticate,origin,login,setup,setupCheck,cookieName,changePassword,temporaryFields} from './auth';
+import {authenticate,origin,login,setup,setupCheck,cookieName,changePassword,temporaryFields,audit} from './auth';
 import {get,list,revision,commit,put,bulkPut,safeStaff,snapshot} from './store';
 import {create,edit,remove} from './domain';
 import {csvHeaders,encodeCsv} from '../src/lib/csv';
@@ -13,7 +13,7 @@ import {requireClientCertificate} from './client-cert';
 import {certificates,activeCertificateIds,revokeAllStatement,revokeAtCloudflare} from './certificates';
 import {routes,getSettings,saveSettings,geoDictionary,geocodes} from './routes';
 const json=(body:unknown,status=200,headers:Record<string,string>={})=>new Response(JSON.stringify(body),{status,headers:{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store',...headers}});
-const security:Record<string,string>={'X-Content-Type-Options':'nosniff','X-Frame-Options':'DENY','Referrer-Policy':'no-referrer','Permissions-Policy':'camera=(), microphone=(), geolocation=()','Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"};
+const security:Record<string,string>={'Strict-Transport-Security':'max-age=31536000','X-Content-Type-Options':'nosniff','X-Frame-Options':'DENY','Referrer-Policy':'no-referrer','Permissions-Policy':'camera=(), microphone=(), geolocation=()','Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"};
 async function bodyOf(req:Request){assert(Number(req.headers.get('content-length')??0)<=2000000,413,'データが大きすぎます。');const text=await req.text();assert(new TextEncoder().encode(text).length<=2000000,413,'データが大きすぎます。');let b:Record<string,unknown>;try{b=JSON.parse(text);}catch{throw new ApiError(400,'JSONが不正です。');}assert(b&&typeof b==='object'&&!Array.isArray(b),400,'送信データが不正です。');return b;}
 function version(doc:Doc,b:Record<string,unknown>){assert(b.version===doc.version,409,'別のスタッフが更新しました。再読込してください。');}
 async function api(req:Request,env:Env,url:URL):Promise<Response>{
@@ -23,7 +23,7 @@ async function api(req:Request,env:Env,url:URL):Promise<Response>{
  if(resource==='setup'&&!operation&&method==='POST'){if(id==='check')return json(await setupCheck(req,env,await bodyOf(req)));if(!id)return json(await setup(req,env,await bodyOf(req)));}
  const {staff:actor,session}=await authenticate(req,env,method!=='GET');
  if(resource==='auth'&&id==='me'&&method==='GET')return json({staff:safeStaff(actor),csrf:session.csrf});
- if(resource==='auth'&&id==='logout'&&method==='POST'){await env.DB.prepare('DELETE FROM sessions WHERE id=?').bind(session.id).run();return json({ok:true},200,{'Set-Cookie':`${cookieName}=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0`});}
+ if(resource==='auth'&&id==='logout'&&method==='POST'){await env.DB.batch([env.DB.prepare('DELETE FROM sessions WHERE id=?').bind(session.id),audit(env,actor.id,'LOGOUT',actor.id)]);return json({ok:true},200,{'Set-Cookie':`${cookieName}=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0`});}
  if(resource==='auth'&&id==='password'&&method==='POST')return json(await changePassword(env,actor,session.id,await bodyOf(req)));
  // 仮パスワードのままでは、自分のパスワードを設定するまで他のAPIを使えない。
  assert(!actor.mustChangePassword,403,'パスワードを設定してください。');
@@ -37,17 +37,17 @@ async function api(req:Request,env:Env,url:URL):Promise<Response>{
  const from=keySchema.parse(url.searchParams.get('from')),to=keySchema.parse(url.searchParams.get('to'));assert(to>from&&to<=addDays(from,370),400,'取得期間は1〜370日で指定してください。');
  return json(await snapshot(env.DB,()=>list(env.DB,'appointments','AND cancelled=0 AND starts_at>=? AND starts_at<? ORDER BY starts_at',[jstDate(from).toISOString(),jstDate(to).toISOString()])));
  }
- if(resource==='audit'&&method==='GET'){assert(actor.role==='ADMIN',403,'管理者のみ閲覧できます。');return json((await env.DB.prepare('SELECT * FROM audit ORDER BY created_at DESC LIMIT 100').all()).results);}
- if(resource==='imports'&&method==='GET'){assert(id==='patients'||id==='appointments',404,'テンプレートがありません。');return new Response(encodeCsv([csvHeaders[id]]),{headers:{'Content-Type':'text/csv; charset=utf-8','Content-Disposition':`attachment; filename="${id}.csv"`,'Cache-Control':'no-store'}});}
+ if(resource==='audit'&&method==='GET'){assert(actor.role==='ADMIN',403,'管理者のみ閲覧できます。');return json((await env.DB.prepare('SELECT * FROM audit ORDER BY created_at DESC LIMIT 300').all()).results);}
+ if(resource==='imports'&&method==='GET'){assert(actor.role==='ADMIN',403,'管理者のみ操作できます。');assert(id==='patients'||id==='appointments',404,'テンプレートがありません。');return new Response(encodeCsv([csvHeaders[id]]),{headers:{'Content-Type':'text/csv; charset=utf-8','Content-Disposition':`attachment; filename="${id}.csv"`,'Cache-Control':'no-store'}});}
  // ルートの計算は読み取りだけなので、更新番号の確認より前で扱う。
  if(resource==='routes'&&!id&&method==='POST')return json(await routes(env,actor,await bodyOf(req)));
  assert(['POST','PATCH','DELETE'].includes(method),405,'操作できません。');const b=await bodyOf(req);
- if(resource==='imports')return json(await imports(env,actor,id,operation,b));
+ if(resource==='imports'){assert(actor.role==='ADMIN',403,'管理者のみ操作できます。');return json(await imports(env,actor,id,operation,b));}
  const expected=z.number().int().nonnegative().parse(b.revision);const meta=await revision(env.DB);assert(meta.revision===expected,409,'別のスタッフが更新しました。再読込してください。');
  let entries:{kind:string;doc:Doc}[]=[],extra:ReturnType<typeof env.DB.prepare>[]=[],entity=id??resource,revokeLater:(string|null)[]=[],temporary:{password:string;expires:string}|null=null;
  if(resource==='appointments'&&id==='bulk-delete'){
  // 日付見出しの「この日の予定を一括削除」。表示中の予定をまとめて取り消す。繰り返し予定はその回だけ。1件でも古ければ何も消さない。
- assert(method==='POST'&&!operation,405,'操作できません。');
+ assert(method==='POST'&&!operation,405,'操作できません。');assert(actor.role==='ADMIN',403,'管理者のみ操作できます。');
  const items=z.array(z.object({id:z.string().max(100),version:z.number().int().positive()})).min(1,'削除する予定がありません。').max(300,'一度に削除できるのは300件までです。').parse(b.items);
  assert(new Set(items.map(i=>i.id)).size===items.length,400,'同じ予定が含まれています。');
  const days=new Set<string>();
