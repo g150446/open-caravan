@@ -16,3 +16,6 @@
 .certificates .issued p{margin:6px 0}
 .certificates .password-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .certificates .password-row code{font-size:17px;letter-spacing:.06em;background:#fff;border:1px solid #cfe5db;border-radius:6px;padding:6px 10px;user-select:all}
+.with-action{display:flex;gap:8px}
+.with-action input{flex:1;min-width:0}
+.with-action button{white-space:nowrap}
