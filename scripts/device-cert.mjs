@@ -3,6 +3,7 @@
 //   node scripts/device-cert.mjs issue tanaka-iphone tanaka-pc ...
 //   node scripts/device-cert.mjs revoke tanaka-iphone
 //   node scripts/device-cert.mjs list
+//   node scripts/device-cert.mjs worker-secret   （このトークンを Worker のシークレットに登録し、スタッフ画面から発行できるようにする）
 // CLOUDFLARE_API_TOKEN（ゾーンの「SSL and Certificates: 編集」権限）があればAPIで発行・失効する。
 // 未設定の場合はCSRを表示し、ダッシュボードで発行した証明書PEMの貼り付けを待つ。
 import {execFileSync} from 'node:child_process';
@@ -105,6 +106,14 @@ async function revoke(names){
  console.log(`\n許可リストから削除しました。反映するにはデプロイしてください:\n  NODE_OPTIONS=--dns-result-order=ipv4first npx --yes wrangler@4 deploy --config ${CONFIG}`);
 }
 
+// .env.device-cert のトークンを、そのまま Worker の CLOUDFLARE_API_TOKEN に登録する。先にゾーンを引けるか確かめる。
+async function workerSecret(){
+ if(!token)fail('.env.device-cert に CLOUDFLARE_API_TOKEN=... を書いてから実行してください。');
+ await zone();
+ execFileSync('npx',['--yes','wrangler@4','secret','put','CLOUDFLARE_API_TOKEN','--config',CONFIG],{input:token,stdio:['pipe','inherit','inherit'],env:{...process.env,NODE_OPTIONS:'--dns-result-order=ipv4first'}});
+ console.log('\n登録しました。デプロイなしで、スタッフ画面から証明書を発行できます。');
+}
+
 function show(){
  const allowed=config().match(allowedPattern)?.[2].split(',')??[];
  for(const d of registry())console.log(`${d.revoked?'失効':allowed.includes(d.fingerprint)?'有効':'未反映'}\t${d.name}\t${d.expires}\t${d.fingerprint.slice(0,16)}…`);
@@ -114,4 +123,5 @@ const [command,...args]=process.argv.slice(2);
 if(command==='issue')await issue(args);
 else if(command==='revoke')await revoke(args);
 else if(command==='list')show();
-else fail('使い方: node scripts/device-cert.mjs issue <端末名...> | revoke <端末名...> | list');
+else if(command==='worker-secret')await workerSecret();
+else fail('使い方: node scripts/device-cert.mjs issue <端末名...> | revoke <端末名...> | list | worker-secret');

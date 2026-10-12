@@ -159,6 +159,8 @@ npm exec --package=wrangler@4 -- wrangler d1 migrations apply open-caravan-db --
 npm exec --package=wrangler@4 -- wrangler secret put CLOUDFLARE_API_TOKEN --config wrangler.local.jsonc
 ```
 
+`.env.device-cert` にトークンを書いてあれば、2行目の代わりに `npm run device-cert -- worker-secret` で同じトークンを登録できます（ゾーンを引けるか確かめてから登録します）。
+
 `MTLS_ALLOWED_SHA256` には管理者の端末を最低1台残してください。D1やAPIに問題があっても、管理者が締め出されないようにするためです。
 
 ### スクリプトでまとめて発行・失効（非常用）
