@@ -30,7 +30,7 @@ button.wide{width:100%;margin-top:6px}
 .menu{position:relative;display:inline-flex}
 .menu>.icon{font-size:17px;line-height:1}
 .menu-list{position:fixed;z-index:60;min-width:190px;background:#fff;border:1px solid #dce7e4;border-radius:8px;box-shadow:0 8px 24px rgba(20,60,50,.14);padding:5px 0;display:flex;flex-direction:column}
-.menu-list button{background:none;border:0;border-radius:0;text-align:left;padding:9px 14px;font-size:13px;color:#24423a;cursor:pointer;white-space:nowrap}
+.menu-list button{background:none;border:0;border-radius:0;text-align:left;padding:9px 14px;font-size:13px;font-weight:400;color:#24423a;cursor:pointer;white-space:nowrap}
 .menu-list button:hover:not(:disabled){background:#f1f7f4}
 .menu-list button.danger{color:#c4442f;font-weight:700}
 .menu-list button:disabled{color:#b5c3c0;cursor:default}
@@ -41,3 +41,4 @@ button.wide{width:100%;margin-top:6px}
 .delete-list{max-height:240px;overflow:auto;margin:0 0 8px;padding-left:20px;font-size:13px;line-height:1.8}
 .delete-list small{color:#71878a;margin-left:4px}
 button.danger-fill{background:#c4442f;border-color:#c4442f}
+.staff-heading>.menu{margin-top:1px}
