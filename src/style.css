@@ -21,3 +21,9 @@
 .with-action button{white-space:nowrap}
 .row-actions{white-space:nowrap}
 .row-actions button+button{margin-left:6px}
+.auth-shell.single{display:flex}
+.auth-card .brand{margin-bottom:22px}
+button.wide{width:100%;margin-top:6px}
+.text-button{background:none;border:0;color:#71878a;margin-top:14px;padding:4px 0;cursor:pointer;text-decoration:underline}
+.reissue{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:4px 0 12px}
+.reissue .hint{margin:0}

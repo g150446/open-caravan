@@ -4,7 +4,7 @@ import type {Env,Actor,Doc} from './types';
 import {assert,ApiError} from '../src/lib/errors';
 import {appointmentSchema,facilitySchema,keySchema,patientSchema,staffSchema} from '../src/lib/validation';
 import {addDays,jstDate} from '../src/lib/date';
-import {authenticate,origin,login,setup,setupCheck,passwordHash,cookieName} from './auth';
+import {authenticate,origin,login,setup,setupCheck,cookieName,changePassword,temporaryFields} from './auth';
 import {get,list,revision,commit,put,bulkPut,safeStaff,snapshot} from './store';
 import {create,edit,remove} from './domain';
 import {csvHeaders,encodeCsv} from '../src/lib/csv';
@@ -23,6 +23,9 @@ async function api(req:Request,env:Env,url:URL):Promise<Response>{
  const {staff:actor,session}=await authenticate(req,env,method!=='GET');
  if(resource==='auth'&&id==='me'&&method==='GET')return json({staff:safeStaff(actor),csrf:session.csrf});
  if(resource==='auth'&&id==='logout'&&method==='POST'){await env.DB.prepare('DELETE FROM sessions WHERE id=?').bind(session.id).run();return json({ok:true},200,{'Set-Cookie':`${cookieName}=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0`});}
+ if(resource==='auth'&&id==='password'&&method==='POST')return json(await changePassword(env,actor,session.id,await bodyOf(req)));
+ // 仮パスワードのままでは、自分のパスワードを設定するまで他のAPIを使えない。
+ assert(!actor.mustChangePassword,403,'パスワードを設定してください。');
  if(certificateRoute)return json(await certificates(req,env,actor,id,rest[0],method==='POST'?await bodyOf(req):null));
  if(resource==='changes'&&method==='GET')return json(await revision(env.DB));
  if(resource==='bootstrap'&&method==='GET')return json(await snapshot(env.DB,async()=>{const [staff,patients,facilities]=await Promise.all([list(env.DB,'staff'),list(env.DB,'patients'),list(env.DB,'facilities')]);return {staff:staff.map(safeStaff),patients,facilities};}));
@@ -36,7 +39,7 @@ async function api(req:Request,env:Env,url:URL):Promise<Response>{
  assert(['POST','PATCH','DELETE'].includes(method),405,'操作できません。');const b=await bodyOf(req);
  if(resource==='imports')return json(await imports(env,actor,id,operation,b));
  const expected=z.number().int().nonnegative().parse(b.revision);const meta=await revision(env.DB);assert(meta.revision===expected,409,'別のスタッフが更新しました。再読込してください。');
- let entries:{kind:string;doc:Doc}[]=[],extra:ReturnType<typeof env.DB.prepare>[]=[],entity=id??resource,revokeLater:(string|null)[]=[];
+ let entries:{kind:string;doc:Doc}[]=[],extra:ReturnType<typeof env.DB.prepare>[]=[],entity=id??resource,revokeLater:(string|null)[]=[],temporary:{password:string;expires:string}|null=null;
  if(resource==='appointments'){
  if(method==='POST'&&!id)entries=await create(env.DB,b);
  else{assert(id,400,'予定IDが必要です。');const a=await get(env.DB,id,'appointments');assert(a&&!a.cancelled,404,'予定が見つかりません。');
@@ -47,6 +50,12 @@ async function api(req:Request,env:Env,url:URL):Promise<Response>{
  else if(method==='DELETE'&&!operation){version(a,b);const scope=z.enum(['one','future']).parse(b.scope);entries=await remove(env.DB,a,scope);}
  else throw new ApiError(405,'操作できません。');
  }
+ }else if(resource==='staff'&&id&&operation==='temporary-password'&&method==='POST'){
+ // パスワードを忘れたときなどに、管理者が仮パスワードを発行し直す。本人のログイン中のセッションは切る。
+ assert(actor.role==='ADMIN',403,'管理者のみ操作できます。');assert(id!==actor.id,400,'自分のパスワードは「パスワード変更」から変更してください。');
+ const current=await get(env.DB,id,'staff');assert(current&&!current.deleted,404,'スタッフが見つかりません。');version(current,b);
+ const t=await temporaryFields(env);temporary={password:t.password,expires:t.fields.temporaryExpires};
+ entries=[{kind:resource,doc:{...current,...t.fields,version:current.version+1}}];extra.push(env.DB.prepare('DELETE FROM sessions WHERE staff_id=?').bind(id));
  }else if(resource==='staff'&&id&&!operation&&method==='DELETE'){
  // 削除済みにして一覧と選択肢から外す。過去の予定や履歴に名前を残すため、データ自体は消さずログインIDだけ空ける。
  assert(actor.role==='ADMIN',403,'管理者のみ操作できます。');assert(id!==actor.id,400,'自分のアカウントは削除できません。');
@@ -63,9 +72,11 @@ async function api(req:Request,env:Env,url:URL):Promise<Response>{
  else{assert(!operation,405,'操作できません。');data=patientSchema.parse({...b,visitFrequency:b.visitFrequency===undefined?(current?.visitFrequency??''):b.visitFrequency});if(data.facilityId)assert(await get(env.DB,String(data.facilityId),'facilities'),400,'施設がありません。');}
  }else if(resource==='facilities'){assert(!operation,405,'操作できません。');data=facilitySchema.parse(b);}
  else{
- assert(actor.role==='ADMIN',403,'管理者のみ操作できます。');assert(!operation,405,'操作できません。');const parsed=staffSchema.parse(b);const {password,...fields}=parsed;data=fields;
- assert(id&&!password||password&&password.length>=12,400,'パスワードは12〜128文字にしてください。');if(id===actor.id)assert(data.active&&data.role==='ADMIN',400,'自分の管理者アカウントを無効にできません。');
- data.passwordHash=password?await passwordHash(password,env.AUTH_PEPPER):current?.passwordHash;assert(data.passwordHash,400,'パスワードが必要です。');if(id&&(password||!data.active))extra.push(env.DB.prepare('DELETE FROM sessions WHERE staff_id=?').bind(id));
+ assert(actor.role==='ADMIN',403,'管理者のみ操作できます。');assert(!operation,405,'操作できません。');const {password:_ignored,...fields}=staffSchema.parse(b);data=fields;if(id===actor.id)assert(data.active&&data.role==='ADMIN',400,'自分の管理者アカウントを無効にできません。');
+ // パスワードは管理者が決めない。新規は仮パスワードを発行し、編集では今のパスワードと仮パスワードの状態を引き継ぐ。
+ if(current)data={...data,passwordHash:current.passwordHash,...(current.mustChangePassword?{mustChangePassword:true,temporaryExpires:current.temporaryExpires}:{})};
+ else{const t=await temporaryFields(env);temporary={password:t.password,expires:t.fields.temporaryExpires};data={...data,...t.fields};}
+ if(id&&!data.active)extra.push(env.DB.prepare('DELETE FROM sessions WHERE staff_id=?').bind(id));
  if(id&&!data.active){revokeLater=await activeCertificateIds(env,id);extra.push(revokeAllStatement(env,id));}
  }
  entries=[{kind:resource,doc:{...data,id:nextId,version:current?current.version+1:1}}];entity=nextId;
@@ -73,7 +84,7 @@ async function api(req:Request,env:Env,url:URL):Promise<Response>{
  await commit(env.DB,expected,[bulkPut(env.DB,entries),...extra],actor.id,method+'_'+resource+(operation?'_'+operation:''),entity);
  // 無効にしたスタッフの証明書は D1 で失効済み。Cloudflare 側の失効は失敗しても保存結果は変えない。
  if(revokeLater.length)await revokeAtCloudflare(env,revokeLater);
- return json({ok:true,revision:expected+1,id:entity});
+ return json({ok:true,revision:expected+1,id:entity,...(temporary?{temporaryPassword:temporary.password,temporaryExpires:temporary.expires}:{})});
 }
 export default {async fetch(req:Request,env:Env){
  let response:Response;try{await requireClientCertificate(req,env);const url=new URL(req.url);if(url.pathname.startsWith('/api/')){assert(env.DB,503,'データベースの設定が必要です。');response=await api(req,env,url);}else{response=env.ASSETS?await env.ASSETS.fetch(req):serveStatic(req);}}

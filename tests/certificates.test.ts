@@ -45,6 +45,7 @@ test('admins issue a certificate from a browser-made CSR, and the .p12 opens wit
   const row=f.db.raw.prepare('SELECT * FROM device_certificates').get();assert.equal(row.fingerprint,forge.md.sha256.create().update(der).digest().toHex());assert.equal(row.staff_id,staffId);
   assert(f.db.raw.prepare("SELECT 1 FROM audit WHERE action='POST_certificates' AND entity_id=?").get(row.id));
   const list=await f.call(admin,`staff/${staffId}/certificates`);assert.equal(list.data.certificates.length,1);assert.equal(list.data.certificates[0].fingerprint.length,16);
+  const first=await f.login('nurse',created.data.temporaryPassword);assert.equal((await f.call(first,'auth/password','POST',{current:created.data.temporaryPassword,next:'nurse-password-long'})).res.status,200);
   const nurse=await f.login('nurse','nurse-password-long');
   assert.equal((await f.call(nurse,`staff/${staffId}/certificates`)).res.status,403);
   assert.equal((await f.call(nurse,`staff/${staffId}/certificates`,'POST',{name:'other',csr:key.csr})).res.status,403);

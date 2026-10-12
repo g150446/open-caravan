@@ -1,6 +1,6 @@
 import type {Actor,Env} from './types';
 import {get,safeStaff,commit,put,revision} from './store';
-import {assert} from '../src/lib/errors';
+import {assert,ApiError} from '../src/lib/errors';
 const enc=new TextEncoder();
 export const cookieName='__Host-caravan_session';
 const hex=(a:ArrayBuffer)=>Array.from(new Uint8Array(a),x=>x.toString(16).padStart(2,'0')).join('');
@@ -12,6 +12,31 @@ export async function passwordHash(password:string,pepper:string,salt=random()){
  const key=await crypto.subtle.importKey('raw',pre,'PBKDF2',false,['deriveBits']);
  const bits=await crypto.subtle.deriveBits({name:'PBKDF2',salt:enc.encode(salt),iterations:100000,hash:'SHA-256'},key,256);
  return `pbkdf2-sha256:100000:${salt}:${hex(bits)}`;
+}
+// 管理者に1回だけ表示する仮パスワード。紛らわしい O/0/I/1 を除く32文字から12文字（60ビット）。
+export function temporaryPassword(){
+ const alphabet='ABCDEFGHJKLMNPQRSTUVWXYZ23456789',chars=Array.from(crypto.getRandomValues(new Uint8Array(12)),v=>alphabet[v%32]).join('');
+ return chars.match(/.{4}/g)!.join('-');
+}
+export const TEMPORARY_DAYS=7;
+export async function temporaryFields(env:Env){
+ const password=temporaryPassword(),expires=new Date(Date.now()+TEMPORARY_DAYS*86400000).toISOString();
+ return {password,fields:{passwordHash:await passwordHash(password,env.AUTH_PEPPER),mustChangePassword:true,temporaryExpires:expires}};
+}
+async function matches(password:string,hash:string,env:Env){return equal(await passwordHash(password,env.AUTH_PEPPER,hash.split(':')[2]),hash);}
+// ログイン中の本人がパスワードを変える。仮パスワードからの初回設定にも使う。今のセッションだけ残す。
+export async function changePassword(env:Env,actor:Actor,sessionId:string,body:Record<string,unknown>){
+ await takeAttempt(env,'password:'+actor.id);
+ assert(typeof body.current==='string'&&typeof body.next==='string'&&body.current.length<=128,400,'入力を確認してください。');
+ assert(await matches(body.current,String(actor.passwordHash),env),400,'現在のパスワードが違います。');
+ assert(body.next.length>=12&&body.next.length<=128,400,'新しいパスワードは12〜128文字にしてください。');
+ assert(body.next!==body.current,400,'現在と違うパスワードにしてください。');
+ const {mustChangePassword,temporaryExpires,...rest}=actor;const doc={...rest,passwordHash:await passwordHash(body.next,env.AUTH_PEPPER),version:actor.version+1};
+ for(let attempt=0;;attempt++){
+  const meta=await revision(env.DB);
+  try{await commit(env.DB,meta.revision,[put(env.DB,'staff',doc),env.DB.prepare('DELETE FROM sessions WHERE staff_id=? AND id<>?').bind(actor.id,sessionId)],actor.id,'POST_auth_password',actor.id);return {ok:true,revision:meta.revision+1};}
+  catch(e){if(attempt>0||!(e instanceof ApiError&&e.status===409))throw e;}
+ }
 }
 export function equal(a:string,b:string){if(a.length!==b.length)return false;let different=0;for(let i=0;i<a.length;i++)different|=a.charCodeAt(i)^b.charCodeAt(i);return different===0;}
 export function origin(req:Request,env:Env){assert(env.APP_ORIGIN && req.headers.get('origin')===env.APP_ORIGIN,403,'アクセス元が一致しません。');assert(req.headers.get('content-type')?.startsWith('application/json'),415,'JSONで送信してください。');}
@@ -35,6 +60,7 @@ export async function login(req:Request,env:Env,body:Record<string,unknown>){
  const hash=String(staff?.passwordHash??`pbkdf2-sha256:100000:${'0'.repeat(64)}:${'0'.repeat(64)}`);
  const salt=hash.split(':')[2];const candidate=await passwordHash(body.password,env.AUTH_PEPPER,salt);
  assert(staff?.active&&equal(candidate,hash),401,'IDまたはパスワードが違います。');
+ assert(!staff.mustChangePassword||Date.parse(String(staff.temporaryExpires))>Date.now(),401,'仮パスワードの期限が切れています。管理者に再発行を依頼してください。');
  const token=random(),csrf=random();await env.DB.batch([
  env.DB.prepare('DELETE FROM sessions WHERE expires<=?').bind(Date.now()),
  env.DB.prepare('DELETE FROM attempts WHERE reset_at<=?').bind(Date.now()),
