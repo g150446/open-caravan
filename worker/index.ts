@@ -3,7 +3,7 @@ import {z} from 'zod';
 import type {Env,Actor,Doc} from './types';
 import {assert,ApiError} from '../src/lib/errors';
 import {appointmentSchema,facilitySchema,keySchema,patientSchema,staffSchema} from '../src/lib/validation';
-import {addDays,jstDate} from '../src/lib/date';
+import {addDays,dateKey,jstDate} from '../src/lib/date';
 import {authenticate,origin,login,setup,setupCheck,cookieName,changePassword,temporaryFields} from './auth';
 import {get,list,revision,commit,put,bulkPut,safeStaff,snapshot} from './store';
 import {create,edit,remove} from './domain';
@@ -40,7 +40,15 @@ async function api(req:Request,env:Env,url:URL):Promise<Response>{
  if(resource==='imports')return json(await imports(env,actor,id,operation,b));
  const expected=z.number().int().nonnegative().parse(b.revision);const meta=await revision(env.DB);assert(meta.revision===expected,409,'別のスタッフが更新しました。再読込してください。');
  let entries:{kind:string;doc:Doc}[]=[],extra:ReturnType<typeof env.DB.prepare>[]=[],entity=id??resource,revokeLater:(string|null)[]=[],temporary:{password:string;expires:string}|null=null;
- if(resource==='appointments'){
+ if(resource==='appointments'&&id==='bulk-delete'){
+ // 日付見出しの「この日の予定を一括削除」。表示中の予定をまとめて取り消す。繰り返し予定はその回だけ。1件でも古ければ何も消さない。
+ assert(method==='POST'&&!operation,405,'操作できません。');
+ const items=z.array(z.object({id:z.string().max(100),version:z.number().int().positive()})).min(1,'削除する予定がありません。').max(300,'一度に削除できるのは300件までです。').parse(b.items);
+ assert(new Set(items.map(i=>i.id)).size===items.length,400,'同じ予定が含まれています。');
+ const days=new Set<string>();
+ for(const item of items){const a=await get(env.DB,item.id,'appointments');assert(a&&!a.cancelled,409,'すでに削除された予定があります。再読込してください。');version(a,item);days.add(dateKey(String(a.startsAt)));entries.push(...await remove(env.DB,a,'one'));}
+ entity=[...days].sort().join(',')+':'+items.length;
+ }else if(resource==='appointments'){
  if(method==='POST'&&!id)entries=await create(env.DB,b);
  else{assert(id,400,'予定IDが必要です。');const a=await get(env.DB,id,'appointments');assert(a&&!a.cancelled,404,'予定が見つかりません。');
  if(operation==='memo'&&method==='PATCH'){version(a,b);const memo=z.string().max(30000).parse(b.memo);entries=[{kind:resource,doc:{...a,memo,version:a.version+1}}];}
@@ -81,7 +89,7 @@ async function api(req:Request,env:Env,url:URL):Promise<Response>{
  }
  entries=[{kind:resource,doc:{...data,id:nextId,version:current?current.version+1:1}}];entity=nextId;
  }else throw new ApiError(404,'APIがありません。');
- await commit(env.DB,expected,[bulkPut(env.DB,entries),...extra],actor.id,method+'_'+resource+(operation?'_'+operation:''),entity);
+ await commit(env.DB,expected,[bulkPut(env.DB,entries),...extra],actor.id,method+'_'+resource+(resource==='appointments'&&id==='bulk-delete'?'_bulk-delete':operation?'_'+operation:''),entity);
  // 無効にしたスタッフの証明書は D1 で失効済み。Cloudflare 側の失効は失敗しても保存結果は変えない。
  if(revokeLater.length)await revokeAtCloudflare(env,revokeLater);
  return json({ok:true,revision:expected+1,id:entity,...(temporary?{temporaryPassword:temporary.password,temporaryExpires:temporary.expires}:{})});

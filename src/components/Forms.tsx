@@ -63,3 +63,23 @@ export function MasterForm({kind,initial,masters,revision,api,admin=false,selfId
  {kind==='staff'&&<><div className="form-grid"><Field label="職種"><select value={v.profession} onChange={e=>change('profession',e.target.value)}>{['医師','看護師','事務','アシスタント','その他'].map(x=><option key={x}>{x}</option>)}</select></Field><Field label="表示色"><input type="color" value={v.color} onChange={e=>change('color',e.target.value)}/></Field><Field label="権限"><select value={v.role} onChange={e=>change('role',e.target.value)}><option value="STAFF">一般スタッフ</option><option value="ADMIN">管理者</option></select></Field></div>{initial?admin&&initial.id!==selfId&&<div className="reissue"><button type="button" className={reissuing?'danger':''} disabled={busy} onClick={reissue}>{reissuing?'本当に仮パスワードを再発行する':'仮パスワードを再発行'}</button><span className="hint">パスワードを忘れたときに使います。今のパスワードは使えなくなり、ログイン中の画面も切れます。</span></div>:<p className="hint">パスワードは登録後に仮パスワードを表示します。本人が初回ログインで自分のパスワードを設定します。</p>}</>}
  {kind!=='facilities'&&<label className="check"><input type="checkbox" checked={v.active} onChange={e=>change('active',e.target.checked)}/>有効な{kind==='patients'?'患者':'アカウント'}</label>}<Footer busy={busy} onClose={onClose}/></form>{kind==='staff'&&initial&&admin&&<CertificateSection staffId={initial.id} active={(initial as Staff).active} api={api}/>}</>;
 }
+
+// 予定1件の削除確認。繰り返し予定は「この回のみ」か「この回以降」を選ぶ（過去の回はこの回のみ）。
+export function DeleteAppointment({appointment,label,revision,api,onDone,onClose}:{appointment:Appointment;label:string;revision:number;api:Api;onDone:()=>Promise<void>;onClose:()=>void}){
+ const [scope,S]=useState('one'),[busy,B]=useState(false),[error,E]=useState('');const future=!!appointment.seriesId&&String(appointment.occurrenceDate)>=dateKey(new Date());
+ return <form onSubmit={async e=>{e.preventDefault();B(true);E('');try{await api('appointments/'+appointment.id,'DELETE',{version:appointment.version,scope,revision});await onDone();onClose();}catch(e){E((e as Error).message);}finally{B(false);}}}>{error&&<p className="error" role="alert">{error}</p>}
+  <p className="confirm-text"><strong>{label}</strong> の予定を削除します。</p>
+  {appointment.seriesId&&<fieldset><legend>削除する範囲</legend><div className="checks"><label><input type="radio" name="scope" checked={scope==='one'} onChange={()=>S('one')}/>この回のみ</label>{future&&<label><input type="radio" name="scope" checked={scope==='future'} onChange={()=>S('future')}/>この回以降すべて</label>}</div></fieldset>}
+  <p className="hint">予定メモも一緒に削除されます。元に戻せません。</p>
+  <div className="form-footer"><button type="button" onClick={onClose}>キャンセル</button><button className="primary danger-fill" disabled={busy}>{busy?'削除中…':'削除する'}</button></div></form>;
+}
+// その日に表示中の予定をまとめて削除する確認。繰り返し予定はその日の回だけ。
+export function BulkDeleteAppointments({title,items,describe,filtered,revision,api,onDone,onClose}:{title:string;items:Appointment[];describe:(a:Appointment)=>string;filtered:boolean;revision:number;api:Api;onDone:()=>Promise<void>;onClose:()=>void}){
+ const [busy,B]=useState(false),[error,E]=useState('');
+ return <form onSubmit={async e=>{e.preventDefault();B(true);E('');try{await api('appointments/bulk-delete','POST',{items:items.map(a=>({id:a.id,version:a.version})),revision});await onDone();onClose();}catch(e){E((e as Error).message);}finally{B(false);}}}>{error&&<p className="error" role="alert">{error}</p>}
+  <p className="confirm-text"><strong>{title}</strong> の予定 <strong>{items.length}件</strong> を削除します。</p>
+  {filtered&&<p className="notice-inline">スタッフの絞り込みや検索で表示中の予定だけが対象です。</p>}
+  <ul className="delete-list">{items.map(a=><li key={a.id}>{describe(a)}{a.seriesId&&<small>（繰り返しのこの回のみ）</small>}</li>)}</ul>
+  <p className="hint">予定メモも一緒に削除されます。元に戻せません。</p>
+  <div className="form-footer"><button type="button" onClick={onClose}>キャンセル</button><button className="primary danger-fill" disabled={busy}>{busy?'削除中…':`${items.length}件を削除する`}</button></div></form>;
+}
