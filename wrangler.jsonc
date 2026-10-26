@@ -5,6 +5,7 @@
   "workers_dev": false,
   "preview_urls": false,
   "routes": [{"pattern": "caravan.YOUR_DOMAIN", "custom_domain": true}],
+  "triggers": {"crons": ["* * * * *"]},
   "d1_databases": [
     {
       "binding": "DB",

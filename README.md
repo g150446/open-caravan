@@ -28,6 +28,7 @@
 - 許可したクライアント証明書による全画面・全APIのアクセス制限。管理者はスタッフ画面から端末証明書を発行・失効（デプロイ不要）
 - 操作履歴、HttpOnlyセッション、CSRF／Origin検証、DBでのログイン試行制限
 - 勤怠（上部メニューの「勤怠」）。下の「勤怠の記録（労働基準監督署への説明）」を参照
+  - Slack の #出勤退勤 に「出勤」「退勤」「休憩」「休憩終わり」を含む投稿をすると、1分以内に本人の打刻になる（下の「Slack の #出勤退勤 との連携」）。アプリのボタンとどちらで打刻してもよい
   - 本人が「出勤」「休憩開始」「休憩終了」「退勤」を押して打刻する。時刻はサーバーの時計で記録し、画面からは時刻を受け取らない。打刻した端末（端末証明書の名前）も残す。順番に合わない打刻（出勤前の退勤など）は受け付けない。夜勤の退勤は出勤した日に付ける
   - 月ごとの表に、予定・出勤・退勤・休憩・労働時間・時間外・深夜・法定休日の労働、月の合計を出す。打刻漏れ、休憩不足（6時間を超えたら45分、8時間を超えたら60分）、予定との30分以上のずれを表示する。「出勤簿を印刷」で出勤簿として印刷できる
   - 一般スタッフは自分の勤怠だけを見られる。打ち忘れは本人が理由を付けて申請し、管理者が承認すると打刻に入る（却下は理由が必須）
@@ -49,7 +50,51 @@
 - **記録の保存**: 打刻・申請・勤務予定は D1 に保存し、アプリから削除する機能はありません（労働基準法第109条により5年間、当分の間は3年間保存）。スタッフを削除しても勤怠は残ります。D1 のバックアップも取ってください
 - **就業規則との対応**: 法定休日の曜日と週の起算曜日は、就業規則に合わせて基本設定で設定します。1か月単位の変形労働時間制を使う場合は、就業規則か労使協定での定めと、勤務予定表を月が始まる前に確定して周知することが必要です
 
-今の版には、36協定の上限チェック、年次有給休暇管理簿、CSV出力はありません。データは migration `0005_attendance.sql` の `punches`・`punch_requests`・`shifts`・`shift_months` にあります。
+- **Slack からの打刻**: 打刻の時刻は、Slack のサーバーが記録した投稿時刻です。本人は時刻を変えられず、投稿を後から編集・削除しても打刻は消えません。打刻の「端末」欄に「Slack」と記録し、アプリの打刻と同じ規則（順番、二重の防止）で受け付けます。投稿と打刻の対応は D1 の `slack_events` に残ります
+
+今の版には、36協定の上限チェック、年次有給休暇管理簿、CSV出力はありません。データは migration `0005_attendance.sql` の `punches`・`punch_requests`・`shifts`・`shift_months` と、`0006_slack.sql` の `slack_state`・`slack_events` にあります。
+
+## Slack の #出勤退勤 との連携
+
+#出勤退勤 の投稿を、Worker が1分ごとに読みに行って打刻にします（Cron Trigger）。本番はクライアント証明書がないリクエストを受け付けないので、Slack から送ってもらう方式（Events API）は使いません。外へ出るのは `slack.com` への通信だけです。
+
+- 対象は「出勤」「退勤」「休憩」を含む投稿です。「休憩」に「終わ・終了・明け・戻」が付けば休憩終了、それ以外は休憩開始とみなします。スレッドの返信と bot の投稿は対象外です
+- 打刻できたら ✅ のリアクションを付けます。打刻しなかったときは、理由をスレッドに返します。主な理由は、Slack アカウントの紐付けがない、すでに出勤している、出勤していない、「明日は遅れて出勤します」のような予定の連絡、1つの投稿に出勤と退勤の両方がある、などです。打刻しなかった投稿は、管理者の勤怠画面にも7日間出ます
+- スタッフと Slack アカウントの紐付けは、管理者がスタッフ情報の「Slack メンバーID」に登録します（Slack のプロフィール → ⋮ → メンバーIDをコピー）
+- 連携を始めた時点より前の投稿は取り込みません。Slack が一時的に応答しないときは、次の1分でやり直します
+
+準備（初回のみ）:
+
+1. https://api.slack.com/apps で「Create New App」→「From a manifest」を選び、ワークスペースを選んで次を貼り付けます。
+
+   ```yaml
+   display_information:
+     name: Open Caravan 勤怠
+   features:
+     bot_user:
+       display_name: Open Caravan 勤怠
+   oauth_config:
+     scopes:
+       bot: [channels:history, groups:history, reactions:write, chat:write]
+   settings:
+     org_deploy_enabled: false
+     socket_mode_enabled: false
+   ```
+
+2. 「Install to Workspace」でインストールし、「OAuth & Permissions」の Bot User OAuth Token（`xoxb-…`）をコピーします。
+3. Slack の #出勤退勤 で `/invite @Open Caravan 勤怠` を実行し、bot をチャンネルに入れます。チャンネル名を右クリック →「リンクをコピー」で得られる URL の末尾の `C…` がチャンネルIDです。
+4. Worker に設定してデプロイします。`wrangler.jsonc` の `"triggers": {"crons": ["* * * * *"]}` が1分ごとの読み取りです（ダッシュボードのエディターで配置する場合は、Worker の「設定 → トリガー → Cron トリガー」に `* * * * *` を追加します）。
+
+   ```sh
+   npm exec --package=wrangler@4 -- wrangler d1 migrations apply open-caravan-db --remote --config wrangler.local.jsonc
+   npm exec --package=wrangler@4 -- wrangler secret put SLACK_BOT_TOKEN --config wrangler.local.jsonc
+   # wrangler.local.jsonc の vars に "SLACK_CHANNEL_ID": "C…" を足してから
+   npm run build && npm exec --package=wrangler@4 -- wrangler deploy --config wrangler.local.jsonc
+   ```
+
+5. 基本設定の「勤怠」に「Slack 連携中（最終確認 …）」と出れば動いています。
+
+このアプリは自分のワークスペースだけで使う内部アプリなので、Marketplace 外で配布するアプリ向けの `conversations.history` の制限（2025年〜）は対象外の見込みです。
 
 ## 開発
 
@@ -96,6 +141,8 @@ npm exec --package=wrangler@4 -- wrangler deploy
 | `CLOUDFLARE_ZONE_ID` | テキスト | 任意。未設定なら `MTLS_HOST` からゾーンを検索 |
 | `CERT_VALIDITY_DAYS` | テキスト | 任意。スタッフ画面で発行する証明書の有効日数（既定365） |
 | `GOOGLE_MAPS_API_KEY` | シークレット | 任意。訪問ルートを道路の距離・時間で計算する場合だけ設定。Google Cloud で Routes API と Maps Static API を有効にして作ったキー（API の制限でこの2つだけに絞る）。未設定なら見積もりモードで動く |
+| `SLACK_BOT_TOKEN` | シークレット | 任意。Slack の #出勤退勤 の投稿を打刻にする場合だけ設定。下の「Slack の #出勤退勤 との連携」で作る Bot User OAuth Token（`xoxb-…`） |
+| `SLACK_CHANNEL_ID` | テキスト | 任意。#出勤退勤 のチャンネルID（`C…`） |
 | `AUTH_PEPPER` | シークレット | 暗号学的乱数32バイト以上。パスワードのハッシュに使用 |
 | `SETUP_TOKEN` | シークレット | 初期管理者登録専用の乱数トークン |
 | `SETUP_EXPIRES` | テキスト | 初期リンク期限のUnix時刻、ミリ秒 |

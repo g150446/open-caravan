@@ -6,7 +6,7 @@ import type {CertificateRequest} from './client-cert';
 import {assert,ApiError} from '../src/lib/errors';
 import {keySchema,monthSchema,punchKindSchema,reasonSchema,shiftSchema,timeSchema} from '../src/lib/validation';
 import {addDays,dateKey,jstDate} from '../src/lib/date';
-import {allowedNext,monthEnd,weekStartOf,type Punch,type PunchRequest,type Shift} from '../src/lib/attendance';
+import {allowedNext,monthEnd,weekStartOf,type Punch,type PunchKind,type PunchRequest,type Shift} from '../src/lib/attendance';
 import {audit} from './auth';
 import {get} from './store';
 import {getSettings} from './routes';
@@ -33,15 +33,27 @@ async function deviceOf(req:CertificateRequest,env:Env){
  return row?.name??fp.slice(0,16);
 }
 const validPunches=async(env:Env,staffId:string,workDate:string)=>(await env.DB.prepare('SELECT * FROM punches WHERE staff_id=? AND work_date=? AND voided_at IS NULL ORDER BY at').bind(staffId,workDate).all<PunchRow>()).results.map(punchOf);
-// 今の勤務日。退勤していない勤務が24時間以内にあればその日（夜勤の退勤は出勤した日に付ける）、なければ今日。
+// その時点の勤務日。退勤していない勤務が24時間以内にあればその日（夜勤の退勤は出勤した日に付ける）、なければその日。
 async function currentWorkDate(env:Env,staffId:string,now:Date){
- const last=await env.DB.prepare('SELECT * FROM punches WHERE staff_id=? AND voided_at IS NULL ORDER BY at DESC LIMIT 1').bind(staffId).first<PunchRow>();
+ const last=await env.DB.prepare('SELECT * FROM punches WHERE staff_id=? AND voided_at IS NULL AND at<=? ORDER BY at DESC LIMIT 1').bind(staffId,now.toISOString()).first<PunchRow>();
  return last&&last.kind!=='OUT'&&now.getTime()-Date.parse(last.at)<86400000?last.work_date:dateKey(now);
 }
 async function status(env:Env,staffId:string){
  const now=new Date(),workDate=await currentWorkDate(env,staffId,now),punches=await validPunches(env,staffId,workDate);
  const shift=await env.DB.prepare('SELECT * FROM shifts WHERE staff_id=? AND day=?').bind(staffId,workDate).first<ShiftRow>();
  return {workDate,punches,next:allowedNext(punches),shift:shift?shiftOf(shift):null,serverTime:now.toISOString()};
+}
+const notAllowed:Record<PunchKind,string>={IN:'すでに出勤しています。',OUT:'出勤していないか、休憩中です。',BREAK_START:'勤務中ではありません。',BREAK_END:'休憩中ではありません。'};
+// 本人の打刻（アプリのボタンと Slack の投稿）。その時点の勤務日とそれまでの打刻から、押せる打刻かを決める。
+// 同時に押しても二重にならないよう、打刻の件数が変わっていないことを確かめて足す。extra は同じ batch で書く文（Slack の取り込み記録など）を打刻のIDから作る。
+export async function selfPunch(env:Env,staffId:string,kind:PunchKind,time:Date,device:string|null,extra:(punchId:string)=>Statement[]=()=>[]){
+ const iso=time.toISOString(),now=new Date().toISOString(),workDate=await currentWorkDate(env,staffId,time),punches=await validPunches(env,staffId,workDate);
+ // それより後の打刻があるとき（アプリと Slack の行き違い）は、順番が崩れるので受け付けない。
+ assert(!await env.DB.prepare('SELECT 1 AS ok FROM punches WHERE staff_id=? AND voided_at IS NULL AND at>? LIMIT 1').bind(staffId,iso).first(),409,'この時刻より後の打刻がすでにあります。');
+ assert(allowedNext(punches).includes(kind),409,notAllowed[kind]);
+ const punch={id:crypto.randomUUID(),staffId,workDate,kind,at:iso,source:'punch' as const,device,reason:null,createdBy:staffId,createdAt:now};
+ await guarded(env,[{changed:env.DB.prepare('INSERT INTO punches(id,staff_id,work_date,kind,at,source,device,reason,created_by,created_at) SELECT ?,?,?,?,?,?,?,?,?,? WHERE (SELECT count(*) FROM punches WHERE staff_id=? AND work_date=? AND voided_at IS NULL)=?').bind(punch.id,punch.staffId,punch.workDate,punch.kind,punch.at,punch.source,punch.device,punch.reason,punch.createdBy,punch.createdAt,staffId,workDate,punches.length)},audit(env,staffId,'PUNCH_'+kind,punch.id),...extra(punch.id)],'別の画面で打刻されました。画面を更新してください。');
+ return punch;
 }
 const at=(date:string,time:string)=>jstDate(date,time).toISOString();
 const entrySchema=z.object({kind:punchKindSchema,date:keySchema,time:timeSchema});
@@ -62,15 +74,14 @@ export async function attendance(req:Request,env:Env,actor:Actor,method:string,i
    env.DB.prepare('SELECT * FROM shifts WHERE staff_id=? AND day>=? AND day<=?').bind(staffId,from,to).all<ShiftRow>(),
    env.DB.prepare('SELECT * FROM shift_months WHERE month=?').bind(month).first<{confirmed_at:string;confirmed_by:string}>(),
    admin?env.DB.prepare("SELECT * FROM punch_requests WHERE status='PENDING' ORDER BY created_at").all<RequestRow>():Promise.resolve({results:[] as RequestRow[]})]);
-  return {punches:punches.results.map(punchOf),requests:requests.results.map(requestOf),shifts:shifts.results.map(shiftOf),confirmed:confirmed?{at:confirmed.confirmed_at,by:confirmed.confirmed_by}:null,pending:pending.results.map(requestOf)};
+  // Slack の投稿で打刻にならなかったもの（直近7日）。管理者が本人に確かめるために出す。
+  const slackRejected=admin?(await env.DB.prepare("SELECT id,slack_user,staff_id,text,message,posted_at FROM slack_events WHERE status='REJECTED' AND posted_at>=? ORDER BY posted_at DESC LIMIT 50").bind(new Date(Date.now()-7*86400000).toISOString()).all<{id:string;slack_user:string;staff_id:string|null;text:string;message:string;posted_at:string}>()).results.map(r=>({id:r.id,slackUser:r.slack_user,staffId:r.staff_id,text:r.text,message:r.message,postedAt:r.posted_at})):[];
+  return {punches:punches.results.map(punchOf),requests:requests.results.map(requestOf),shifts:shifts.results.map(shiftOf),confirmed:confirmed?{at:confirmed.confirmed_at,by:confirmed.confirmed_by}:null,pending:pending.results.map(requestOf),slackRejected};
  }
  assert(method==='POST'||method==='PATCH',405,'操作できません。');assert(body,400,'送信データが不正です。');
  if(id==='punch'&&!operation&&method==='POST'){
-  // 時刻はサーバーの時計で決める。画面から時刻は受け取らない。同時に押しても二重にならないよう、打刻の件数が変わっていないことを確かめて足す。
-  const kind=punchKindSchema.parse(body.kind),workDate=await currentWorkDate(env,actor.id,new Date(now)),punches=await validPunches(env,actor.id,workDate);
-  assert(allowedNext(punches).includes(kind),409,{IN:'すでに出勤しています。',OUT:'出勤していないか、休憩中です。',BREAK_START:'勤務中ではありません。',BREAK_END:'休憩中ではありません。'}[kind]);
-  const punch={id:crypto.randomUUID(),staffId:actor.id,workDate,kind,at:now,source:'punch' as const,device:await deviceOf(req as CertificateRequest,env),reason:null,createdBy:actor.id,createdAt:now};
-  await guarded(env,[{changed:env.DB.prepare('INSERT INTO punches(id,staff_id,work_date,kind,at,source,device,reason,created_by,created_at) SELECT ?,?,?,?,?,?,?,?,?,? WHERE (SELECT count(*) FROM punches WHERE staff_id=? AND work_date=? AND voided_at IS NULL)=?').bind(punch.id,punch.staffId,punch.workDate,punch.kind,punch.at,punch.source,punch.device,punch.reason,punch.createdBy,punch.createdAt,actor.id,workDate,punches.length)},audit(env,actor.id,'PUNCH_'+kind,punch.id)],'別の画面で打刻されました。画面を更新してください。');
+  // 時刻はサーバーの時計で決める。画面から時刻は受け取らない。
+  await selfPunch(env,actor.id,punchKindSchema.parse(body.kind),new Date(),await deviceOf(req as CertificateRequest,env));
   return {ok:true,...await status(env,actor.id)};
  }
  if(id==='requests'&&!operation&&method==='POST'){

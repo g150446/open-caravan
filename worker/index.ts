@@ -13,6 +13,7 @@ import {requireClientCertificate} from './client-cert';
 import {certificates,activeCertificateIds,revokeAllStatement,revokeAtCloudflare} from './certificates';
 import {routes,getSettings,saveSettings,geoDictionary,geocodes} from './routes';
 import {attendance,shifts} from './attendance';
+import {pollSlack,slackStatus} from './slack';
 const json=(body:unknown,status=200,headers:Record<string,string>={})=>new Response(JSON.stringify(body),{status,headers:{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store',...headers}});
 const security:Record<string,string>={'Strict-Transport-Security':'max-age=31536000','X-Content-Type-Options':'nosniff','X-Frame-Options':'DENY','Referrer-Policy':'no-referrer','Permissions-Policy':'camera=(), microphone=(), geolocation=()','Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"};
 async function bodyOf(req:Request){assert(Number(req.headers.get('content-length')??0)<=2000000,413,'データが大きすぎます。');const text=await req.text();assert(new TextEncoder().encode(text).length<=2000000,413,'データが大きすぎます。');let b:Record<string,unknown>;try{b=JSON.parse(text);}catch{throw new ApiError(400,'JSONが不正です。');}assert(b&&typeof b==='object'&&!Array.isArray(b),400,'送信データが不正です。');return b;}
@@ -35,7 +36,7 @@ async function api(req:Request,env:Env,url:URL):Promise<Response>{
  if(resource==='attendance')return json(await attendance(req,env,actor,method,id,operation,url.searchParams,method==='GET'?null:await bodyOf(req)));
  if(resource==='shifts')return json(await shifts(env,actor,method,id,url.searchParams,method==='GET'?null:await bodyOf(req)));
  if(resource==='changes'&&method==='GET')return json(await revision(env.DB));
- if(resource==='bootstrap'&&method==='GET')return json(await snapshot(env.DB,async()=>{const [staff,patients,facilities,settings]=await Promise.all([list(env.DB,'staff'),list(env.DB,'patients'),list(env.DB,'facilities'),getSettings(env.DB)]);return {staff:staff.map(safeStaff),patients,facilities,settings:{...settings,routeMode:env.GOOGLE_MAPS_API_KEY?'google':'estimate'}};}));
+ if(resource==='bootstrap'&&method==='GET')return json(await snapshot(env.DB,async()=>{const [staff,patients,facilities,settings,slack]=await Promise.all([list(env.DB,'staff'),list(env.DB,'patients'),list(env.DB,'facilities'),getSettings(env.DB),slackStatus(env)]);return {staff:staff.map(safeStaff),patients,facilities,settings:{...settings,routeMode:env.GOOGLE_MAPS_API_KEY?'google':'estimate',slack}};}));
  if(resource==='appointments'&&method==='GET'){
  if(id)return json(await snapshot(env.DB,async()=>{const a=await get(env.DB,id,'appointments');assert(a&&!a.cancelled,404,'予定が見つかりません。');let previous:Doc[]=[],next:Doc[]=[];if(a.patientId){previous=(await list(env.DB,'appointments','AND patient_id=? AND cancelled=0 AND starts_at<? ORDER BY starts_at DESC LIMIT 3',[a.patientId,a.startsAt]));next=await list(env.DB,'appointments','AND patient_id=? AND cancelled=0 AND starts_at>? ORDER BY starts_at LIMIT 3',[a.patientId,a.startsAt]);}return {appointment:a,previous,next,series:a.seriesId?await get(env.DB,String(a.seriesId),'series'):null};}));
  const from=keySchema.parse(url.searchParams.get('from')),to=keySchema.parse(url.searchParams.get('to'));assert(to>from&&to<=addDays(from,370),400,'取得期間は1〜370日で指定してください。');
@@ -107,6 +108,7 @@ async function api(req:Request,env:Env,url:URL):Promise<Response>{
  }else if(resource==='facilities'){assert(!operation,405,'操作できません。');data=facilitySchema.parse(b);}
  else{
  assert(actor.role==='ADMIN',403,'管理者のみ操作できます。');assert(!operation,405,'操作できません。');const {password:_ignored,...fields}=staffSchema.parse(b);data=fields;if(id===actor.id)assert(data.active&&data.role==='ADMIN',400,'自分の管理者アカウントを無効にできません。');
+ if(data.slackUserId)assert(!(await list(env.DB,'staff')).some(s=>s.id!==id&&!s.deleted&&s.slackUserId===data.slackUserId),409,'この Slack メンバーIDは別のスタッフに登録されています。');
  // パスワードは管理者が決めない。新規は仮パスワードを発行し、編集では今のパスワードと仮パスワードの状態を引き継ぐ。
  if(current)data={...data,passwordHash:current.passwordHash,...(current.mustChangePassword?{mustChangePassword:true,temporaryExpires:current.temporaryExpires}:{})};
  else{const t=await temporaryFields(env);temporary={password:t.password,expires:t.fields.temporaryExpires};data={...data,...t.fields};}
@@ -120,7 +122,10 @@ async function api(req:Request,env:Env,url:URL):Promise<Response>{
  if(revokeLater.length)await revokeAtCloudflare(env,revokeLater);
  return json({ok:true,revision:expected+1,id:entity,...(temporary?{temporaryPassword:temporary.password,temporaryExpires:temporary.expires}:{})});
 }
-export default {async fetch(req:Request,env:Env){
+export default {
+ // Slack の #出勤退勤 を読む（wrangler の Cron Trigger で毎分）。
+ async scheduled(_event:unknown,env:Env,ctx:{waitUntil(p:Promise<unknown>):void}){ctx.waitUntil(pollSlack(env).catch(e=>console.error('slack_poll_failed',e instanceof Error?e.name:'unknown')));},
+ async fetch(req:Request,env:Env){
  let response:Response;try{await requireClientCertificate(req,env);const url=new URL(req.url);if(url.pathname.startsWith('/api/')){assert(env.DB,503,'データベースの設定が必要です。');response=await api(req,env,url);}else{response=env.ASSETS?await env.ASSETS.fetch(req):serveStatic(req);}}
  catch(e){if(e instanceof ApiError)response=json({error:e.message},e.status);else if(e instanceof z.ZodError)response=json({error:e.issues.map(i=>i.message).join(' / ')},400);else{console.error('request_failed',e instanceof Error?e.name:'unknown');response=json({error:'処理に失敗しました。入力を保持したまま再試行してください。'},500);}}
  const result=new Response(response.body,response);for(const [k,v]of Object.entries(security))result.headers.set(k,v);return result;
