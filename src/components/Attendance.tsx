@@ -24,7 +24,7 @@ function PunchPanel({api,onPunched}:{api:Api;onPunched:()=>void}){
 // 1日分の打刻の修正（管理者）か、修正の申請（本人）。取り消した打刻も残して表示する。
 function DayDialog({row,staff,admin,requests,api,onClose,onDone}:{row:DayResult;staff:Staff;admin:boolean;requests:PunchRequest[];api:Api;onClose:()=>void;onDone:()=>void}){
  const [remove,R]=useState<string[]>([]),[add,A]=useState<{kind:PunchKind;date:string;time:string}[]>([]),[reason,RS]=useState(''),[busy,B]=useState(false),[error,E]=useState('');
- const next=allowedNext(row.punches).at(-1)??'IN',blank={kind:next,date:row.day,time:row.shift?.kind==='WORK'?(next==='OUT'?row.shift.end:row.shift.start)??'09:00':'09:00'};
+ const next=allowedNext(row.punches).at(-1)??'IN',blank={kind:next,date:row.day,time:row.shift?.kind==='WORK'?(next==='OUT'?row.shift.end:row.shift.start)??'08:00':'08:00'};
  const [request,Q]=useState(blank);
  async function submit(){B(true);E('');try{if(admin)await api('attendance/corrections','POST',{staffId:staff.id,workDate:row.day,add,void:remove,reason});else await api('attendance/requests','POST',{workDate:row.day,...request,reason});onDone();}catch(e){E((e as Error).message);}finally{B(false);}}
  const entry=(v:typeof blank,set:(v:typeof blank)=>void,extra?:React.ReactNode)=><div className="punch-entry"><select aria-label="種類" value={v.kind} onChange={e=>set({...v,kind:e.target.value as PunchKind})}>{Object.entries(punchLabels).map(([k,l])=><option key={k} value={k}>{l}</option>)}</select><select aria-label="日付" value={v.date} onChange={e=>set({...v,date:e.target.value})}><option value={row.day}>当日</option><option value={addDays(row.day,1)}>翌日</option></select><input aria-label="時刻" type="time" required value={v.time} onChange={e=>set({...v,time:e.target.value})}/>{extra}</div>;

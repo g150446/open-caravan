@@ -35,7 +35,7 @@ test('routes are computed from D1 addresses only, grouped by facility, without p
   await f.add(a,'09:00','09:30');await f.add(b,'10:00','10:30');await f.add(c,'10:30','11:00');await f.add(d,'11:00','11:30');
   const ids=(await f.onDay()).map(x=>x.id);
   assert.equal((await f.call('routes','POST',{appointmentIds:ids,avoidHighways:true})).status,400,'office address is required first');
-  const bootstrap=(await f.call('bootstrap')).data.data;assert.deepEqual({...bootstrap.settings},{officeName:'',officeAddress:'',marginMinutes:10,officeLocation:'',detourFactor:1.4,speedKmh:30,shiftPatterns:[{code:'日',label:'日勤',start:'09:00',end:'18:00',breakMinutes:60}],legalHolidayWeekday:0,weekStartWeekday:0,version:0,routeMode:'google'});
+  const bootstrap=(await f.call('bootstrap')).data.data;assert.deepEqual({...bootstrap.settings},{officeName:'',officeAddress:'',marginMinutes:10,officeLocation:'',detourFactor:1.4,speedKmh:30,shiftPatterns:[{code:'日',label:'日勤',start:'08:00',end:'17:00',breakMinutes:60}],legalHolidayWeekday:0,weekStartWeekday:0,version:0,routeMode:'google'});
   assert.equal((await f.call('settings','PATCH',{officeName:'テスト診療所',officeAddress:'北海道テスト町9-9',marginMinutes:5,version:0})).status,200);
   assert.equal((await f.call('settings','PATCH',{officeName:'x',officeAddress:'y',marginMinutes:5,version:0})).status,409);
   const r=await f.call('routes','POST',{appointmentIds:ids,avoidHighways:true});assert.equal(r.status,200,JSON.stringify(r.data));

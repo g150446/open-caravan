@@ -10,7 +10,7 @@ export interface ShiftPattern {code:string;label:string;start:string;end:string;
 export const punchLabels:Record<PunchKind,string>={IN:'出勤',OUT:'退勤',BREAK_START:'休憩開始',BREAK_END:'休憩終了'};
 export const shiftLabels:Record<ShiftKind,string>={WORK:'勤務',OFF:'休日',LEGAL_OFF:'法定休日',PAID_LEAVE:'有休'};
 export const workSystemLabels:Record<WorkSystem,string>={standard:'通常（1日8時間・週40時間）',monthly_variable:'1か月単位の変形労働時間制'};
-export const defaultPatterns:ShiftPattern[]=[{code:'日',label:'日勤',start:'09:00',end:'18:00',breakMinutes:60}];
+export const defaultPatterns:ShiftPattern[]=[{code:'日',label:'日勤',start:'08:00',end:'17:00',breakMinutes:60}];
 const DAY=480,WEEK=2400;
 const minutesOf=(t:string)=>Number(t.slice(0,2))*60+Number(t.slice(3,5));
 const span=(a:string,b:string)=>(Date.parse(b)-Date.parse(a))/60000;
