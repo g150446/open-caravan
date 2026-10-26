@@ -12,6 +12,7 @@ import {imports} from './imports';
 import {requireClientCertificate} from './client-cert';
 import {certificates,activeCertificateIds,revokeAllStatement,revokeAtCloudflare} from './certificates';
 import {routes,getSettings,saveSettings,geoDictionary,geocodes} from './routes';
+import {attendance,shifts} from './attendance';
 const json=(body:unknown,status=200,headers:Record<string,string>={})=>new Response(JSON.stringify(body),{status,headers:{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store',...headers}});
 const security:Record<string,string>={'Strict-Transport-Security':'max-age=31536000','X-Content-Type-Options':'nosniff','X-Frame-Options':'DENY','Referrer-Policy':'no-referrer','Permissions-Policy':'camera=(), microphone=(), geolocation=()','Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"};
 async function bodyOf(req:Request){assert(Number(req.headers.get('content-length')??0)<=2000000,413,'データが大きすぎます。');const text=await req.text();assert(new TextEncoder().encode(text).length<=2000000,413,'データが大きすぎます。');let b:Record<string,unknown>;try{b=JSON.parse(text);}catch{throw new ApiError(400,'JSONが不正です。');}assert(b&&typeof b==='object'&&!Array.isArray(b),400,'送信データが不正です。');return b;}
@@ -30,6 +31,9 @@ async function api(req:Request,env:Env,url:URL):Promise<Response>{
  if(geoRoute){assert(method==='GET',405,'操作できません。');return geoDictionary(url.pathname.slice('/api/geo/'.length),url.searchParams);}
  if(resource==='geocodes'&&!id)return json(await geocodes(env,actor,method,method==='POST'?await bodyOf(req):null));
  if(certificateRoute)return json(await certificates(req,env,actor,id,rest[0],method==='POST'?await bodyOf(req):null));
+ // 勤怠と勤務予定表は共有リビジョンを使わず、行ごとに競合を確かめる。
+ if(resource==='attendance')return json(await attendance(req,env,actor,method,id,operation,url.searchParams,method==='GET'?null:await bodyOf(req)));
+ if(resource==='shifts')return json(await shifts(env,actor,method,id,url.searchParams,method==='GET'?null:await bodyOf(req)));
  if(resource==='changes'&&method==='GET')return json(await revision(env.DB));
  if(resource==='bootstrap'&&method==='GET')return json(await snapshot(env.DB,async()=>{const [staff,patients,facilities,settings]=await Promise.all([list(env.DB,'staff'),list(env.DB,'patients'),list(env.DB,'facilities'),getSettings(env.DB)]);return {staff:staff.map(safeStaff),patients,facilities,settings:{...settings,routeMode:env.GOOGLE_MAPS_API_KEY?'google':'estimate'}};}));
  if(resource==='appointments'&&method==='GET'){
@@ -67,7 +71,8 @@ async function api(req:Request,env:Env,url:URL):Promise<Response>{
  }else if(resource==='settings'&&!id&&method==='PATCH'){
  // 事業所の設定（ルートの出発・到着地）。管理者だけが変えられる。
  assert(actor.role==='ADMIN',403,'管理者のみ操作できます。');
- const {version:v,...fields}=settingsSchema.parse(b);const current=await getSettings(env.DB);assert(v===current.version,409,'別のスタッフが更新しました。再読込してください。');
+ // 送られなかった項目（勤務パターンなど）は今の値を引き継ぐ。
+ const current=await getSettings(env.DB);const {version:v,...fields}=settingsSchema.parse({...current,...b});assert(v===current.version,409,'別のスタッフが更新しました。再読込してください。');
  extra.push(saveSettings(env.DB,fields,v+1));entity='office';
  }else if(resource==='appointments'){
  if(method==='POST'&&!id)entries=await create(env.DB,b);

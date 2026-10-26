@@ -6,11 +6,12 @@ import {get} from './store';
 import {takeAttempt} from './auth';
 import {assert,ApiError} from '../src/lib/errors';
 import {groupStops,stopLabel,type Visit} from '../src/lib/route';
+import {defaultPatterns,type ShiftPattern} from '../src/lib/attendance';
 
-export interface Settings {officeName:string;officeAddress:string;marginMinutes:number;officeLocation:string;detourFactor:number;speedKmh:number;version:number;}
+export interface Settings {officeName:string;officeAddress:string;marginMinutes:number;officeLocation:string;detourFactor:number;speedKmh:number;shiftPatterns:ShiftPattern[];legalHolidayWeekday:number;weekStartWeekday:number;version:number;}
 export async function getSettings(db:Database):Promise<Settings>{
  const row=await db.prepare("SELECT data,version FROM settings WHERE id='office'").first<{data:string;version:number}>();
- return {officeName:'',officeAddress:'',marginMinutes:10,officeLocation:'',detourFactor:1.4,speedKmh:30,...(row?JSON.parse(row.data):{}),version:row?.version??0};
+ return {officeName:'',officeAddress:'',marginMinutes:10,officeLocation:'',detourFactor:1.4,speedKmh:30,shiftPatterns:defaultPatterns,legalHolidayWeekday:0,weekStartWeekday:0,...(row?JSON.parse(row.data):{}),version:row?.version??0};
 }
 export const saveSettings=(db:Database,s:Omit<Settings,'version'>,version:number)=>db.prepare("INSERT INTO settings(id,data,version) VALUES('office',?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data,version=excluded.version").bind(JSON.stringify(s),version);
 
