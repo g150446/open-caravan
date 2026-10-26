@@ -13,6 +13,12 @@ test('Slack posts are read as punches only when the meaning is clear',()=>{
  assert('ignored' in parsePunch('体調不良のため出勤できません')!);
  assert('ignored' in parsePunch('出勤・退勤')!);
  assert.equal(parsePunch('おはようございます'),null);
+ // #出勤退勤 でよくある書き方。
+ assert.deepEqual(parsePunch('退勤します'),{kind:'OUT'});
+ assert.deepEqual(parsePunch('退勤しました\n\n前のアカウントは別のスタッフの出退勤です'),{kind:'OUT'});
+ assert.match((parsePunch('山田さんも7:30出勤してます') as {ignored:string}).ignored,/ほかの人/);
+ assert.match((parsePunch('昨日17:30 退勤してます\n本日出勤しました') as {ignored:string}).ignored,/時刻や日付/);
+ assert.equal(parsePunch('間違えて出勤退勤のチャネルに書いてしまいました。山田さん宛です。'),null);
  assert.equal(tsDate('1793000000.123456').toISOString(),new Date(1793000000123).toISOString());
 });
 
