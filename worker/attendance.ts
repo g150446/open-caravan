@@ -49,7 +49,7 @@ async function status(env:Env,staffId:string){
  const next=allowedNext(punches);if(workDate!==dateKey(now)&&!next.includes('IN'))next.push('IN');
  return {workDate,punches,next,shift:shift?shiftOf(shift):null,serverTime:now.toISOString()};
 }
-const notAllowed:Record<PunchKind,string>={IN:'すでに出勤しています。',OUT:'出勤していないか、休憩中です。',BREAK_START:'勤務中ではありません。',BREAK_END:'休憩中ではありません。'};
+export const notAllowed:Record<PunchKind,string>={IN:'すでに出勤しています。',OUT:'出勤していないか、休憩中です。',BREAK_START:'勤務中ではありません。',BREAK_END:'休憩中ではありません。'};
 // 本人の打刻（アプリのボタンと Slack の投稿）。その時点の勤務日とそれまでの打刻から、押せる打刻かを決める。
 // 同時に押しても二重にならないよう、打刻の件数が変わっていないことを確かめて足す。extra は同じ batch で書く文（Slack の取り込み記録など）を打刻のIDから作る。
 export async function selfPunch(env:Env,staffId:string,kind:PunchKind,time:Date,device:string|null,extra:(punchId:string)=>Statement[]=()=>[]){

@@ -86,6 +86,7 @@ test('posts that cannot be punched get a thread reply and are listed for admins'
   await f.tick();
   const replies=slack.state.calls.filter(c=>c.method==='chat.postMessage');assert.equal(replies.length,3);
   assert(replies.every(r=>r.body.thread_ts&&r.body.channel==='C0TEST'));
+  assert(replies.every(r=>!r.body.text.includes('休憩')));
   assert.match(replies[0].body.text,/すでに出勤しています/);assert(replies.every(r=>r.body.text.includes('書き方：')));assert.match(replies[1].body.text,/紐付いていない/);assert.match(replies[2].body.text,/予定の連絡/);
   assert.equal((await f.call(n,`attendance?month=${month()}`)).data.punches.length,1);
   const rejected=(await f.call(admin,`attendance?month=${month()}`)).data.slackRejected;assert.equal(rejected.length,3);assert.equal(rejected.find((r:any)=>r.slackUser==='U0OTHER99').staffId,null);

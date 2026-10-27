@@ -11,7 +11,7 @@ import {parsePunch,postingGuide,slackIds,tsDate,type Oncall} from '../src/lib/sl
 import {oncallLabels,punchLabels} from '../src/lib/attendance';
 import {list} from './store';
 import {audit} from './auth';
-import {addOncall,checkDeadline,selfPunch} from './attendance';
+import {addOncall,checkDeadline,notAllowed,selfPunch} from './attendance';
 
 interface Message {type?:string;subtype?:string;bot_id?:string;user?:string;text?:string;ts:string;thread_ts?:string;}
 type Staff=Awaited<ReturnType<typeof list>>;
@@ -42,6 +42,8 @@ const activeStaff=async(env:Env)=>(await list(env.DB,'staff')).filter(s=>s.activ
 const ownPost=(m:Message)=>m.type==='message'&&!m.subtype&&!m.bot_id&&!!m.user&&(!m.thread_ts||m.thread_ts===m.ts);
 const parsedOf=(m:Message)=>ownPost(m)?parsePunch(m.text??''):null;
 const monthDay=(d:Date)=>dateKey(d).slice(5).replace(/^0?(\d+)-0?(\d+)$/,'$1/$2');
+// Slack では休憩を扱わないので、返信では休憩に触れない。
+const slackReason=(m:string)=>m===notAllowed.OUT?'今は退勤を打刻できる状態ではありません。アプリで今日の打刻を確かめてください。':m;
 const noKeyword=`出勤・退勤・オンコールのキーワードがなかったため、打刻は登録しませんでした。\n${postingGuide}`;
 // 1件の投稿を打刻にする。結果を slack_events に残し、after（読み取り位置の更新など）を同じ batch で書く。
 async function handle(env:Env,channel:string,m:Message,staff:Staff,now:string,live:boolean,after:Statement[]):Promise<'PUNCHED'|'REJECTED'|'SKIPPED'>{
@@ -62,7 +64,7 @@ async function handle(env:Env,channel:string,m:Message,staff:Staff,now:string,li
    else if('kind' in parsed){done=`${punchLabels[parsed.kind]}として打刻しました（${monthDay(tsDate(m.ts))} ${timeKey(tsDate(m.ts))}）。`;await selfPunch(env,person.id,parsed.kind,tsDate(m.ts),'Slack',punchId=>[env.DB.prepare("INSERT INTO slack_events(id,slack_user,staff_id,punch_id,text,kind,status,posted_at,created_at) VALUES(?,?,?,?,?,?,'PUNCHED',?,?)").bind(id,m.user,person.id,punchId,text,kind,postedAt,now),...after]);}
    if(live){await notify(env,'reactions.add',{channel,timestamp:m.ts,name:'white_check_mark'});await notify(env,'chat.postMessage',{channel,thread_ts:m.ts,text:done});}
    return 'PUNCHED';}
-  catch(e){if(!(e instanceof ApiError))throw e;reason='oncall' in parsed?`オンコール（${oncallLabels[parsed.oncall.kind]}）を記録しませんでした：${e.message}`:`${punchLabels[kind as keyof typeof punchLabels]}の打刻にしませんでした：${e.message}`;}
+  catch(e){if(!(e instanceof ApiError))throw e;reason='oncall' in parsed?`オンコール（${oncallLabels[parsed.oncall.kind]}）を記録しませんでした：${e.message}`:`${punchLabels[kind as keyof typeof punchLabels]}の打刻にしませんでした：${slackReason(e.message)}`;}
  }
  await env.DB.batch([env.DB.prepare("INSERT OR IGNORE INTO slack_events(id,slack_user,staff_id,text,kind,status,message,posted_at,created_at) VALUES(?,?,?,?,?,'REJECTED',?,?,?)").bind(id,m.user,person?.id??null,text,kind,reason,postedAt,now),...after]);
  if(live)await notify(env,'chat.postMessage',{channel,thread_ts:m.ts,text:`${reason}\n${postingGuide}\n${appHint}`});
