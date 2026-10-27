@@ -1,6 +1,7 @@
 import test from 'node:test';import assert from 'node:assert/strict';import {readFileSync,readdirSync} from 'node:fs';
 import {SQLite} from '../scripts/sqlite';import sourceWorker from '../worker/index';import type {Env} from '../worker/types';
 import {parsePunch,tsDate} from '../src/lib/slack';
+import {addDays,dateKey,jstDate} from '../src/lib/date';
 const worker=process.env.TEST_BUNDLE?(await import('../build/worker.js' as string)).default:sourceWorker;
 
 test('Slack posts are read as punches only when the meaning is clear',()=>{
@@ -30,7 +31,7 @@ function slackMock(){
   const url=new URL(String(input));const method=url.pathname.slice('/api/'.length);
   if(url.hostname!=='slack.com')return original(input,init);
   assert.equal(init?.headers?.Authorization,'Bearer xoxb-test');
-  if(method==='conversations.history'){if(state.fail)return new Response('',{status:429});const oldest=Number(url.searchParams.get('oldest'));return Response.json({ok:true,messages:state.messages.filter(m=>Number(m.ts)>oldest).reverse(),has_more:false});}
+  if(method==='conversations.history'){if(state.fail)return new Response('',{status:429});const oldest=Number(url.searchParams.get('oldest')),latest=Number(url.searchParams.get('latest')||Infinity);return Response.json({ok:true,messages:state.messages.filter(m=>Number(m.ts)>oldest&&Number(m.ts)<latest).reverse(),has_more:false});}
   state.calls.push({method,body:JSON.parse(init.body)});return Response.json({ok:true});
  }) as typeof fetch;
  return {state,restore:()=>{globalThis.fetch=original;}};
@@ -107,5 +108,44 @@ test('a Slack member ID belongs to one staff member and nothing runs without the
   assert.equal((await f.call(admin,'staff','POST',{login:'nurse3',name:'三人目',kana:'',profession:'看護師',color:'#336699',role:'STAFF',active:true,slackUserId:'not-an-id'})).status,400);
   delete f.env.SLACK_BOT_TOKEN;await f.tick();assert.equal(f.db.raw.prepare('SELECT count(*) AS n FROM slack_state').get().n,0);
   assert.equal((await f.call(admin,'bootstrap')).data.data.settings.slack.configured,false);
+ }finally{slack.restore();}
+});
+test('past posts are imported in chunks from a date, without writing to Slack',async()=>{
+ const f=fixture(),slack=slackMock();
+ try{
+  const admin=await f.setup(),n=await nurse(f,admin,'U0NURSE01, U0OLDACC1');
+  const today=dateKey(new Date()),post=(daysAgo:number,time:string,text:string,user='U0NURSE01')=>({type:'message',user,text,ts:(jstDate(addDays(today,-daysAgo),time).getTime()/1000).toFixed(6)});
+  // 10日分の出勤・退勤（20件）。1日目は前のアカウント、2日目は退勤を忘れて翌朝に出勤、ほかの人の報告も1件。
+  slack.state.messages=[post(12,'08:00','出勤しました','U0OLDACC1'),post(12,'17:30','退勤しました','U0OLDACC1'),post(11,'08:00','出勤しました'),post(10,'07:30','出勤しました'),post(10,'17:00','退勤します'),post(10,'17:05','山田さんも退勤しました')];
+  for(let d=9;d>=3;d--)slack.state.messages.push(post(d,'08:00','出勤しました'),post(d,'17:00','退勤しました'));
+  assert.equal((await f.call(admin,'slack/backfill','POST',{from:addDays(today,-12)})).status,409);
+  await f.tick();
+  assert.equal((await f.call(n,'slack/backfill','POST',{from:addDays(today,-12)})).status,403);
+  let r=await f.call(admin,'slack/backfill','POST',{from:addDays(today,-11)});assert.equal(r.status,200,JSON.stringify(r.data));
+  assert.equal(r.data.done,false);assert.equal(r.data.punched+r.data.rejected,15);
+  let total=r.data.punched;const rejected=[r.data.rejected];
+  while(!r.data.done){r=await f.call(admin,'slack/backfill','POST',{from:addDays(today,-11),after:r.data.after});total+=r.data.punched;rejected.push(r.data.rejected);}
+  // 12日前（from より前）は取り込まない。11日前の出勤、10日前の出勤・退勤、9〜3日前の14件。
+  assert.equal(total,17);assert.equal(rejected.reduce((a,b)=>a+b),1);
+  assert.equal(slack.state.calls.length,0);
+  r=await f.call(admin,'slack/backfill','POST',{from:addDays(today,-12)});assert.equal(r.data.punched,2);
+  r=await f.call(admin,'slack/backfill','POST',{from:addDays(today,-12)});while(!r.data.done)r=await f.call(admin,'slack/backfill','POST',{from:addDays(today,-12),after:r.data.after});assert.equal(r.data.punched,0);
+  const all=f.db.raw.prepare("SELECT work_date,kind FROM punches WHERE staff_id=? ORDER BY at").all(n.id);
+  assert.equal(all.length,19);
+  // 退勤を忘れた翌朝の出勤は、新しい勤務日になる。
+  assert.deepEqual(all.filter((p:any)=>p.work_date===addDays(today,-11)).map((p:any)=>p.kind),['IN']);
+  assert.deepEqual(all.filter((p:any)=>p.work_date===addDays(today,-10)).map((p:any)=>p.kind),['IN','OUT']);
+  assert((await f.call(admin,'audit')).data.some((a:any)=>a.action==='SLACK_IMPORTED'));
+  assert.equal((await f.call(admin,`attendance?month=${month()}`)).data.slackRejected.length,1);
+ }finally{slack.restore();}
+});
+test('after a forgotten clock-out, the app still lets staff clock in today',async()=>{
+ const f=fixture(),slack=slackMock();
+ try{
+  const admin=await f.setup(),n=await nurse(f,admin);
+  const yesterday=jstDate(addDays(dateKey(new Date()),-1),'20:00').toISOString();
+  f.db.raw.prepare("INSERT INTO punches(id,staff_id,work_date,kind,at,source,device,created_by,created_at) VALUES('old',?,?,'IN',?,'punch','local',?,?)").run(n.id,dateKey(yesterday),yesterday,n.id,yesterday);
+  const status=(await f.call(n,'attendance/status')).data;assert(status.next.includes('IN'));
+  const r=await f.call(n,'attendance/punch','POST',{kind:'IN'});assert.equal(r.status,200,JSON.stringify(r.data));assert.equal(r.data.workDate,dateKey(new Date()));
  }finally{slack.restore();}
 });

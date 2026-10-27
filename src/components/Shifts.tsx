@@ -55,3 +55,17 @@ export function AttendanceSettings({settings,api,revision,onSaved}:{settings:Set
   <p className="hint">就業規則に合わせて設定してください。週40時間の計算は起算曜日から7日ごとに行います（定めがなければ日曜日）。勤務予定表で「法定休日」にした日は、曜日に関係なく法定休日として計算します。</p>
  </form>;
 }
+// 基本設定の「Slack の過去の投稿」。連携を始める前の #出勤退勤 の投稿を、指定した日から取り込む。Slack には何も返さない。
+export function SlackImport({api}:{api:Api}){
+ const [from,F]=useState(()=>dateKey(new Date(Date.now()-30*86400000))),[busy,B]=useState(false),[error,E]=useState(''),[result,R]=useState<{punched:number;rejected:number;done:boolean}|null>(null);
+ async function run(){
+  if(!window.confirm(`${from} 以降の #出勤退勤 の投稿を、打刻として取り込みますか？取り込んだ打刻は消せません（修正は取り消しとして残ります）。`))return;
+  B(true);E('');let total={punched:0,rejected:0,done:false},after:string|null=null;R(total);
+  try{for(let i=0;i<200&&!total.done;i++){const r:{done:boolean;after:string|null;punched:number;rejected:number}=await api('slack/backfill','POST',{from,...(after?{after}:{})});total={punched:total.punched+r.punched,rejected:total.rejected+r.rejected,done:r.done};after=r.after;R(total);}}
+  catch(e){E((e as Error).message);}finally{B(false);}
+ }
+ return <section className="office-settings"><div className="section-title"><h3>Slack の過去の投稿を取り込む</h3></div>
+  <div className="office-grid"><Field label="この日から"><input type="date" value={from} max={dateKey(new Date())} onChange={e=>F(e.target.value)}/></Field><button className="primary" disabled={busy||!from} onClick={run}>{busy?'取り込み中…':'取り込む'}</button></div>
+  {error&&<p className="error" role="alert">{error}</p>}{result&&<p className="notice-inline">{result.done?'取り込みました':'取り込み中'}：打刻 {result.punched}件、打刻にしなかった投稿 {result.rejected}件{result.rejected?'（勤怠画面の一覧で確認できます）':''}</p>}
+  <p className="hint">連携を始める前の投稿を、投稿した時刻の打刻にします。Slack には ✅ も返信も付けません。すでに取り込んだ投稿は二重になりません。打刻にしなかった投稿は、管理者の勤怠画面に7日間表示されます。</p></section>;
+}

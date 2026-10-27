@@ -17,5 +17,7 @@ export function parsePunch(text:string):Parsed{
  if(rest)return {kind:/終わ|おわ|終了|明け|戻/.test(t)?'BREAK_END':'BREAK_START'};
  return {kind:out?'OUT':'IN'};
 }
+// スタッフ情報の Slack メンバーID（前のアカウントも含め、カンマ区切りで複数）。
+export const slackIds=(v:string)=>v.split(',').map(x=>x.trim()).filter(Boolean);
 // Slack の ts（秒.マイクロ秒）を日時に。
 export const tsDate=(ts:string)=>new Date(Math.round(Number(ts)*1000));
