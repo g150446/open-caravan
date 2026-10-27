@@ -1,11 +1,12 @@
-// Slack の #出勤退勤 の投稿を打刻の種類に読み替える。「出勤」「退勤」「休憩」「オンコール」を含む投稿だけを対象にする。
+// Slack の #出勤退勤 の投稿を打刻の種類に読み替える。「出勤」「退勤」「オンコール」を含む投稿だけを対象にする。
+// 休憩は Slack では打刻しない（アプリで打刻するか、自動の休憩控除に任せる）。
 import type {OncallKind,PunchKind} from './attendance';
 // 予定の連絡（「明日は遅れて出勤します」など）は、投稿した時刻に働き始めたわけではないので打刻にしない。
 const notice=/できません|できない|しません|休みます|欠勤|遅れ|遅刻|明日|あした|出勤予定|退勤予定/;
 export type Oncall={kind:OncallKind;start:string;end:string;note:string};
 export type Parsed={kind:PunchKind}|{oncall:Oncall}|{ignored:string}|null;
 // 打刻・記録にならなかった投稿への返信に付ける、正しい書き方。
-export const postingGuide='書き方：出勤は「出勤します」、退勤は「退勤します」のように、時刻を書かずに投稿してください（投稿した時刻で打刻します）。休憩は「休憩入ります」「休憩終わります」。オンコールの対応は「オンコール 電話対応 18:00-18:05」「オンコール 出動 18時から18時40分」のように、電話対応か出動かと、対応した時刻の範囲を書いてください。';
+export const postingGuide='書き方：出勤は「出勤します」、退勤は「退勤します」のように、時刻を書かずに投稿してください（投稿した時刻で打刻します）。オンコールの対応は「オンコール 電話対応 18:00-18:05」「オンコール 出動 18時から18時40分」のように、電話対応か出動かと、対応した時刻の範囲を書いてください。';
 // 時刻は「18:00」「18時」「18時5分」「18時半」、区切りは 〜 - や「から」。
 const time=String.raw`(\d{1,2})\s*(?::\s*(\d{2})|時\s*(?:(\d{1,2})\s*分|(半))?)`;
 const range=new RegExp(time+String.raw`\s*(?:[〜～~\-－ー―]|から)\s*`+time);
@@ -20,15 +21,14 @@ export function parsePunch(text:string):Parsed{
  const t=text.replace(/[０-９：]/g,c=>String.fromCharCode(c.charCodeAt(0)-0xFEE0)).replace(/<[^>]*>/g,' ').replace(/:[a-z0-9_+'-]*[a-z][a-z0-9_+'-]*:/gi,' ').replace(/出勤退勤|出退勤/g,' ');
  // オンコール中の対応は、対応した時間だけを時刻の範囲で報告する（オンコール自体の開始・終了は報告しない）。
  if(/オンコ/.test(t))return oncallOf(t);
- const rest=t.includes('休憩'),out=t.includes('退勤'),start=t.includes('出勤');
- if(!rest&&!out&&!start)return null;
+ const out=t.includes('退勤'),start=t.includes('出勤');
+ if(!out&&!start)return null;
  if(notice.test(t))return {ignored:'予定の連絡と判断したため、打刻にしませんでした。'};
  // ほかの人の報告（「〇〇さんも出勤してます」）は、投稿した本人の打刻にしない。
  if(/さん/.test(t))return {ignored:'ほかの人の出勤・退勤の連絡と判断したため、打刻にしませんでした。本人が投稿するか、アプリで打刻してください。'};
  // 時刻を書いた投稿（「7:30出勤」「昨日17:30 退勤」）は、投稿した時刻と実際の時刻が違うので打刻にしない。
  if(/\d{1,2}\s*[:：時]\s*\d{0,2}|昨日/.test(t))return {ignored:'時刻や日付が書かれていて、投稿した時刻と違う可能性があるため、打刻にしませんでした。'};
- if(Number(rest)+Number(out)+Number(start)>1)return {ignored:'出勤・退勤・休憩のどれか決められなかったため、打刻にしませんでした。1つの投稿には1つだけ書いてください。'};
- if(rest)return {kind:/終わ|おわ|終了|明け|戻/.test(t)?'BREAK_END':'BREAK_START'};
+ if(out&&start)return {ignored:'出勤か退勤か決められなかったため、打刻にしませんでした。1つの投稿には1つだけ書いてください。'};
  return {kind:out?'OUT':'IN'};
 }
 // スタッフ情報の Slack メンバーID（前のアカウントも含め、カンマ区切りで複数）。

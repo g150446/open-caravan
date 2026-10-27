@@ -1,4 +1,4 @@
-// Slack の #出勤退勤 を Cron で1分ごとに読み、「出勤」「退勤」「休憩」の投稿を本人の打刻にする。
+// Slack の #出勤退勤 を Cron で1分ごとに読み、「出勤」「退勤」の投稿を本人の打刻に、「オンコール」の投稿をオンコールの対応の記録にする。
 // 本番は全リクエストにクライアント証明書を求めるので、Slack から送ってもらう（Events API）のではなく、こちらから読みに行く。
 // 打刻の時刻は読んだ時刻ではなく、Slack が記録した投稿時刻（ts）。本人の投稿にはすべて、結果をスレッドに返す（打刻できたら ✅ も付ける）。
 // 連携を始める前の投稿は、管理者が基本設定から取り込む（backfillSlack）。そのときは Slack に何も返さない。
@@ -42,7 +42,7 @@ const activeStaff=async(env:Env)=>(await list(env.DB,'staff')).filter(s=>s.activ
 const ownPost=(m:Message)=>m.type==='message'&&!m.subtype&&!m.bot_id&&!!m.user&&(!m.thread_ts||m.thread_ts===m.ts);
 const parsedOf=(m:Message)=>ownPost(m)?parsePunch(m.text??''):null;
 const monthDay=(d:Date)=>dateKey(d).slice(5).replace(/^0?(\d+)-0?(\d+)$/,'$1/$2');
-const noKeyword=`出勤・退勤・休憩・オンコールのキーワードがなかったため、打刻は登録しませんでした。\n${postingGuide}`;
+const noKeyword=`出勤・退勤・オンコールのキーワードがなかったため、打刻は登録しませんでした。\n${postingGuide}`;
 // 1件の投稿を打刻にする。結果を slack_events に残し、after（読み取り位置の更新など）を同じ batch で書く。
 async function handle(env:Env,channel:string,m:Message,staff:Staff,now:string,live:boolean,after:Statement[]):Promise<'PUNCHED'|'REJECTED'|'SKIPPED'>{
  const parsed=parsedOf(m),id=`${channel}:${m.ts}`;

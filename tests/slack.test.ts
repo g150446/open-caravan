@@ -7,9 +7,9 @@ const worker=process.env.TEST_BUNDLE?(await import('../build/worker.js' as strin
 test('Slack posts are read as punches only when the meaning is clear',()=>{
  assert.deepEqual(parsePunch('出勤します'),{kind:'IN'});
  assert.deepEqual(parsePunch('<@U123> 退勤しました、お疲れさまでした :wave:'),{kind:'OUT'});
- assert.deepEqual(parsePunch('休憩入ります'),{kind:'BREAK_START'});
- assert.deepEqual(parsePunch('休憩終わりました'),{kind:'BREAK_END'});
- assert.deepEqual(parsePunch('休憩から戻りました'),{kind:'BREAK_END'});
+ // 休憩は Slack では打刻しない。
+ assert.equal(parsePunch('休憩入ります'),null);
+ assert.equal(parsePunch('休憩終わりました'),null);
  assert('ignored' in parsePunch('明日は遅れて出勤します')!);
  assert('ignored' in parsePunch('体調不良のため出勤できません')!);
  assert('ignored' in parsePunch('出勤・退勤')!);
