@@ -6,7 +6,7 @@ import type {CertificateRequest} from './client-cert';
 import {assert,ApiError} from '../src/lib/errors';
 import {keySchema,monthSchema,punchKindSchema,reasonSchema,shiftSchema,timeSchema} from '../src/lib/validation';
 import {addDays,dateKey,jstDate} from '../src/lib/date';
-import {allowedNext,monthEnd,weekStartOf,type Punch,type PunchKind,type PunchRequest,type Shift} from '../src/lib/attendance';
+import {allowedNext,monthEnd,selfDeadline,weekStartOf,type Punch,type PunchKind,type PunchRequest,type Shift} from '../src/lib/attendance';
 import {audit} from './auth';
 import {get} from './store';
 import {getSettings} from './routes';
@@ -61,6 +61,8 @@ export async function selfPunch(env:Env,staffId:string,kind:PunchKind,time:Date,
 const at=(date:string,time:string)=>jstDate(date,time).toISOString();
 const entrySchema=z.object({kind:punchKindSchema,date:keySchema,time:timeSchema});
 // 打刻の日時は勤務日かその翌日（夜勤の退勤）に限る。
+// 本人の申請・申告は翌月10日まで。管理者は期限の後も修正・承認できる（賃金の請求権は期限で消えないため）。
+const checkDeadline=(admin:boolean,workDate:string)=>assert(admin||dateKey(new Date())<=selfDeadline(workDate),409,`${Number(workDate.slice(5,7))}月の勤怠の申請期限（${selfDeadline(workDate)}）を過ぎています。管理者に修正を依頼してください。`);
 const checkEntry=(workDate:string,e:{date:string})=>assert(e.date===workDate||e.date===addDays(workDate,1),400,'打刻の日付は勤務日か翌日にしてください。');
 
 export async function attendance(req:Request,env:Env,actor:Actor,method:string,id:string|undefined,operation:string|undefined,params:URLSearchParams,body:Record<string,unknown>|null){
@@ -94,7 +96,7 @@ export async function attendance(req:Request,env:Env,actor:Actor,method:string,i
   assert(admin||staffId===actor.id,403,'自分の勤怠だけを申告できます。');assert(await get(env.DB,staffId,'staff'),404,'スタッフが見つかりません。');
   if(operation==='revoke'){assert(admin,403,'管理者のみ操作できます。');
    await guarded(env,[{changed:env.DB.prepare('UPDATE break_waivers SET revoked_at=?,revoked_by=? WHERE staff_id=? AND work_date=? AND revoked_at IS NULL').bind(now,actor.id,staffId,workDate)},audit(env,actor.id,'BREAK_WAIVER_REVOKED',staffId+':'+workDate)],'取り消す申告がありません。');return {ok:true};}
-  assert(!operation,404,'APIがありません。');assert(workDate<=dateKey(new Date()),400,'これからの日は申告できません。');
+  assert(!operation,404,'APIがありません。');assert(workDate<=dateKey(new Date()),400,'これからの日は申告できません。');checkDeadline(admin,workDate);
   const reason=reasonSchema.parse(body.reason);
   // 取り消した申告がある日は、出し直しで上書きする。有効な申告がある日は二重にしない。
   await guarded(env,[{changed:env.DB.prepare('INSERT INTO break_waivers(staff_id,work_date,reason,created_by,created_at) VALUES(?,?,?,?,?) ON CONFLICT(staff_id,work_date) DO UPDATE SET reason=excluded.reason,created_by=excluded.created_by,created_at=excluded.created_at,revoked_at=NULL,revoked_by=NULL WHERE break_waivers.revoked_at IS NOT NULL').bind(staffId,workDate,reason,actor.id,now)},audit(env,actor.id,'BREAK_WAIVED',staffId+':'+workDate)],'この日はすでに申告されています。');
@@ -102,7 +104,7 @@ export async function attendance(req:Request,env:Env,actor:Actor,method:string,i
  }
  if(id==='requests'&&!operation&&method==='POST'){
   // 打ち忘れなどの申請は本人だけが出す。承認されるまで勤怠には入らない。
-  const workDate=keySchema.parse(body.workDate),entry=entrySchema.parse(body),reason=reasonSchema.parse(body.reason);checkEntry(workDate,entry);
+  const workDate=keySchema.parse(body.workDate),entry=entrySchema.parse(body),reason=reasonSchema.parse(body.reason);checkEntry(workDate,entry);checkDeadline(admin,workDate);
   const time=at(entry.date,entry.time);assert(time<=now,400,'これからの時刻は申請できません。');
   const r={id:crypto.randomUUID()};
   await env.DB.batch([env.DB.prepare("INSERT INTO punch_requests(id,staff_id,work_date,kind,at,reason,status,created_at) VALUES(?,?,?,?,?,?,'PENDING',?)").bind(r.id,actor.id,workDate,entry.kind,time,reason,now),audit(env,actor.id,'PUNCH_REQUESTED',r.id)]);

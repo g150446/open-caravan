@@ -18,6 +18,8 @@ const overlap=(a:[number,number],b:[number,number])=>Math.max(0,Math.min(a[1],b[
 export const monthEnd=(month:string)=>addDays(nextMonth(month+'-01'),-1);
 export const monthDays=(month:string)=>{const days:string[]=[];for(let d=month+'-01';d.slice(0,7)===month;d=addDays(d,1))days.push(d);return days;};
 export const weekStartOf=(day:string,startWeekday:number)=>addDays(day,-((new Date(day+'T00:00:00Z').getUTCDay()-startWeekday+7)%7));
+// スタッフ本人が修正を申請・休憩を申告できる期限（勤務日の翌月10日）。過ぎた後は管理者が理由を付けて修正する。
+export const selfDeadline=(workDate:string)=>nextMonth(workDate.slice(0,7)+'-01').slice(0,8)+'10';
 // 1か月単位の変形労働時間制の法定総枠（40時間×暦日数÷7）。
 export const legalTotal=(days:number)=>Math.floor(WEEK*days/7);
 // 予定の労働時間。終了が開始以前なら翌日の終了とみなす。

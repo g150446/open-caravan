@@ -1,7 +1,7 @@
 import test from 'node:test';import assert from 'node:assert/strict';import {readFileSync,readdirSync} from 'node:fs';
 import {SQLite} from '../scripts/sqlite';import sourceWorker from '../worker/index';import type {Env} from '../worker/types';
 import {addDays,dateKey,jstDate} from '../src/lib/date';
-import {monthRecord,type Punch,type PunchKind,type Shift} from '../src/lib/attendance';
+import {monthRecord,selfDeadline,type Punch,type PunchKind,type Shift} from '../src/lib/attendance';
 const worker=process.env.TEST_BUNDLE?(await import('../build/worker.js' as string)).default:sourceWorker;
 
 // 打刻を作る。時刻は日本時間の「YYYY-MM-DD HH:MM」。
@@ -165,4 +165,17 @@ test('staff declare days they could not take a break; admins can revoke, and the
  assert.equal((await f.call(nurse,'attendance/break-waiver','POST',{workDate:yesterday,reason:'出し直し'})).status,200);
  w=(await f.call(nurse,`attendance?month=${yesterday.slice(0,7)}`)).data.waivers;assert.equal(w[0].revokedAt,null);assert.equal(w[0].reason,'出し直し');
  const actions=(await f.call(admin,'audit')).data.map((a:any)=>a.action);assert(actions.includes('BREAK_WAIVED')&&actions.includes('BREAK_WAIVER_REVOKED'));
+});
+test('staff can request corrections until the 10th of the next month; admins can still correct and approve after that',async()=>{
+ assert.equal(selfDeadline('2026-10-31'),'2026-11-10');assert.equal(selfDeadline('2026-12-01'),'2027-01-10');
+ const f=fixture(),admin=await f.setup(),nurse=await nurseOf(f,admin),old='2025-01-15',yesterday=addDays(dateKey(new Date()),-1);
+ const late=await f.call(nurse,'attendance/requests','POST',{workDate:old,kind:'IN',date:old,time:'08:00',reason:'打刻を忘れた'});assert.equal(late.status,409);assert.match(late.data.error??JSON.stringify(late.data),/2025-02-10/);
+ assert.equal((await f.call(nurse,'attendance/break-waiver','POST',{workDate:old,reason:'取れなかった'})).status,409);
+ assert.equal((await f.call(nurse,'attendance/requests','POST',{workDate:yesterday,kind:'IN',date:yesterday,time:'08:00',reason:'打刻を忘れた'})).status,200);
+ assert.equal((await f.call(admin,'attendance/break-waiver','POST',{staffId:nurse.id,workDate:old,reason:'本人の申告を確認'})).status,200);
+ assert.equal((await f.call(admin,'attendance/corrections','POST',{staffId:nurse.id,workDate:old,add:[{kind:'IN',date:old,time:'08:00'}],void:[],reason:'訪問記録で確認'})).status,200);
+ // 期限の前に出された申請は、期限の後も承認できる。
+ await f.db.prepare("INSERT INTO punch_requests(id,staff_id,work_date,kind,at,reason,status,created_at) VALUES('old-req',?,?,'OUT',?,'退勤を忘れた','PENDING',?)").bind(nurse.id,old,jstDate(old,'17:00').toISOString(),'2025-02-01T00:00:00.000Z').run();
+ assert.equal((await f.call(admin,'attendance/requests/old-req','PATCH',{approve:true})).status,200);
+ assert.equal((await f.call(nurse,`attendance?month=2025-01`)).data.punches.filter((p:any)=>!p.voidedAt).length,2);
 });
