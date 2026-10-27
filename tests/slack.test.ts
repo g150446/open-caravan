@@ -1,6 +1,6 @@
 import test from 'node:test';import assert from 'node:assert/strict';import {readFileSync,readdirSync} from 'node:fs';
 import {SQLite} from '../scripts/sqlite';import sourceWorker from '../worker/index';import type {Env} from '../worker/types';
-import {parsePunch,tsDate} from '../src/lib/slack';
+import {parsePunch,tsDate} from '../src/lib/slack';import {oncallTimes} from '../worker/slack';import {timeKey} from '../src/lib/date';
 import {addDays,dateKey,jstDate} from '../src/lib/date';
 const worker=process.env.TEST_BUNDLE?(await import('../build/worker.js' as string)).default:sourceWorker;
 
@@ -147,5 +147,27 @@ test('after a forgotten clock-out, the app still lets staff clock in today',asyn
   f.db.raw.prepare("INSERT INTO punches(id,staff_id,work_date,kind,at,source,device,created_by,created_at) VALUES('old',?,?,'IN',?,'punch','local',?,?)").run(n.id,dateKey(yesterday),yesterday,n.id,yesterday);
   const status=(await f.call(n,'attendance/status')).data;assert(status.next.includes('IN'));
   const r=await f.call(n,'attendance/punch','POST',{kind:'IN'});assert.equal(r.status,200,JSON.stringify(r.data));assert.equal(r.data.workDate,dateKey(new Date()));
+ }finally{slack.restore();}
+});
+test('on-call posts report the response time as a range, dated back from the post',()=>{
+ assert.deepEqual(parsePunch('オンコール 電話対応 22:30〜22:45 発熱の相談'),{oncall:{kind:'CALL',start:'22:30',end:'22:45',note:'発熱の相談'}});
+ assert.deepEqual(parsePunch('オンコール出動 23:50-0:40'),{oncall:{kind:'DISPATCH',start:'23:50',end:'00:40',note:''}});
+ assert.match((parsePunch('オンコール出動します') as {ignored:string}).ignored,/時刻の範囲/);
+ assert.match((parsePunch('明日オンコールです') as {ignored:string}).ignored,/予定/);
+ const at=(o:string,posted:string)=>{const t=oncallTimes(parsePunch(o)&&(parsePunch(o) as any).oncall,jstDate(posted.slice(0,10),posted.slice(11)));return [t.start.toISOString(),t.end.toISOString()];};
+ assert.deepEqual(at('オンコール 電話 22:30〜22:45','2026-11-02 23:00'),[jstDate('2026-11-02','22:30').toISOString(),jstDate('2026-11-02','22:45').toISOString()]);
+ assert.deepEqual(at('オンコール 電話 23:30〜0:05','2026-11-03 00:10'),[jstDate('2026-11-02','23:30').toISOString(),jstDate('2026-11-03','00:05').toISOString()]);
+ assert.deepEqual(at('オンコール 出動 23:00〜23:40','2026-11-03 08:00'),[jstDate('2026-11-02','23:00').toISOString(),jstDate('2026-11-02','23:40').toISOString()]);
+});
+test('on-call posts in Slack become on-call responses with a reaction',async()=>{
+ const f=fixture(),slack=slackMock();
+ try{
+  const admin=await f.setup(),n=await nurse(f,admin);await f.tick();
+  await new Promise(r=>setTimeout(r,20));const base=Date.now()/1000,from=timeKey(new Date(Date.now()-40*60000)),to=timeKey(new Date(Date.now()-20*60000));
+  slack.state.messages.push({type:'message',user:'U0NURSE01',text:`オンコール 電話対応 ${from}〜${to}`,ts:base.toFixed(6)},{type:'message',user:'U0NURSE01',text:'オンコール出動しました',ts:(base+0.001).toFixed(6)});
+  await f.tick();
+  const start=new Date(Date.now()-40*60000),m=dateKey(start).slice(0,7),entries=(await f.call(n,`attendance?month=${m}`)).data.oncall;
+  assert.equal(entries.length,1);assert.equal(entries[0].kind,'CALL');assert.equal(entries[0].source,'slack');assert.equal(timeKey(entries[0].start),from);assert.equal(timeKey(entries[0].end),to);
+  assert.deepEqual(slack.state.calls.map(c=>c.method),['reactions.add','chat.postMessage']);assert.match(slack.state.calls[1].body.text,/時刻の範囲/);
  }finally{slack.restore();}
 });

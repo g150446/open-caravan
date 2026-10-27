@@ -1,7 +1,7 @@
 import test from 'node:test';import assert from 'node:assert/strict';import {readFileSync,readdirSync} from 'node:fs';
 import {SQLite} from '../scripts/sqlite';import sourceWorker from '../worker/index';import type {Env} from '../worker/types';
 import {addDays,dateKey,jstDate} from '../src/lib/date';
-import {monthRecord,selfDeadline,type Punch,type PunchKind,type Shift} from '../src/lib/attendance';
+import {monthRecord,selfDeadline,type OncallEntry,type Punch,type PunchKind,type Shift} from '../src/lib/attendance';
 const worker=process.env.TEST_BUNDLE?(await import('../build/worker.js' as string)).default:sourceWorker;
 
 // 打刻を作る。時刻は日本時間の「YYYY-MM-DD HH:MM」。
@@ -9,7 +9,8 @@ let n=0;
 const punch=(workDate:string,kind:PunchKind,local:string,extra:Partial<Punch>={}):Punch=>({id:'p'+(++n),staffId:'s',workDate,kind,at:jstDate(local.slice(0,10),local.slice(11)).toISOString(),source:'punch',device:null,reason:null,createdBy:'s',createdAt:'',voidedAt:null,voidedBy:null,voidReason:null,...extra});
 const day=(d:string,from:string,to:string,breakFrom?:string,breakTo?:string)=>[punch(d,'IN',`${d} ${from}`),...(breakFrom?[punch(d,'BREAK_START',`${d} ${breakFrom}`),punch(d,'BREAK_END',`${d} ${breakTo}`)]:[]),punch(d,'OUT',`${to.length>5?to:d+' '+to}`)];
 const shift=(d:string,kind:Shift['kind'],start:string|null=null,end:string|null=null,breakMinutes=0):Shift=>({staffId:'s',day:d,kind,pattern:null,start,end,breakMinutes,note:'',version:1});
-const month=(m:string,punches:Punch[],o:{shifts?:Shift[];system?:'standard'|'monthly_variable';confirmed?:boolean;autoBreakMinutes?:number;waivers?:string[]}={})=>monthRecord({month:m,system:o.system??'standard',confirmed:o.confirmed??false,weekStart:0,legalHolidayWeekday:0,today:'2099-01-01',punches,shifts:o.shifts??[],autoBreakMinutes:o.autoBreakMinutes,waivers:o.waivers});
+const month=(m:string,punches:Punch[],o:{shifts?:Shift[];system?:'standard'|'monthly_variable';confirmed?:boolean;autoBreakMinutes?:number;waivers?:string[];oncall?:OncallEntry[];duties?:string[]}={})=>monthRecord({month:m,system:o.system??'standard',confirmed:o.confirmed??false,weekStart:0,legalHolidayWeekday:0,today:'2099-01-01',punches,shifts:o.shifts??[],autoBreakMinutes:o.autoBreakMinutes,waivers:o.waivers,oncall:o.oncall,duties:o.duties});
+const call=(d:string,from:string,to:string,extra:Partial<OncallEntry>={}):OncallEntry=>({id:'o'+(++n),staffId:'s',workDate:d,kind:'CALL',start:jstDate(from.length>5?from.slice(0,10):d,from.slice(-5)).toISOString(),end:jstDate(to.length>5?to.slice(0,10):d,to.slice(-5)).toISOString(),note:'',source:'manual',createdBy:'s',createdAt:'',voidedAt:null,voidedBy:null,voidReason:null,...extra});
 const of=(r:ReturnType<typeof month>,d:string)=>r.days.find(x=>x.day===d)!;
 
 test('daily work over 8 hours is overtime and the break is the gap between punches',()=>{
@@ -178,4 +179,62 @@ test('staff can request corrections until the 10th of the next month; admins can
  await f.db.prepare("INSERT INTO punch_requests(id,staff_id,work_date,kind,at,reason,status,created_at) VALUES('old-req',?,?,'OUT',?,'退勤を忘れた','PENDING',?)").bind(nurse.id,old,jstDate(old,'17:00').toISOString(),'2025-02-01T00:00:00.000Z').run();
  assert.equal((await f.call(admin,'attendance/requests/old-req','PATCH',{approve:true})).status,200);
  assert.equal((await f.call(nurse,`attendance?month=2025-01`)).data.punches.filter((p:any)=>!p.voidedAt).length,2);
+});
+test('on-call responses add to work, night and overtime without double counting the regular day',()=>{
+ // 平日 8:00〜17:00（休憩は自動）＋ 22:30〜23:10 の電話対応 → 労働 8:40、時間外 0:40、深夜 0:40。
+ const r=month('2026-06',day('2026-06-01','08:00','17:00'),{autoBreakMinutes:60,oncall:[call('2026-06-01','22:30','23:10')],duties:['2026-06-01','2026-06-02']});
+ const d=of(r,'2026-06-01');assert.equal(d.work,520);assert.equal(d.oncallMinutes,40);assert.equal(d.oncallCount,1);assert.equal(d.night,40);assert.equal(d.overtime,40);assert(d.autoBreak);assert.equal(d.breakMinutes,60);assert(d.duty);
+ assert.deepEqual(r.totals.oncall,40);assert.equal(r.totals.oncallCount,1);assert.equal(r.totals.duties,2);assert.equal(r.totals.workDays,1);
+ // 通常の勤務と重なる分（16:30〜17:30 のうち 16:30〜17:00）は二重に数えない。日をまたぐ対応は翌日の深夜にも入る。
+ const o=of(month('2026-06',day('2026-06-01','08:00','17:00','12:00','13:00'),{oncall:[call('2026-06-01','16:30','17:30'),call('2026-06-01','23:50','2026-06-02 00:40',{kind:'DISPATCH'})]}),'2026-06-01');
+ assert.equal(o.oncallMinutes,30+50);assert.equal(o.work,480+80);assert.equal(o.night,50);
+ // 取り消した報告と、オンコールだけの日（出勤日には数えない）。
+ const only=month('2026-06',[],{oncall:[call('2026-06-03','02:00','03:00'),call('2026-06-03','04:00','04:30',{voidedAt:'x'})]});
+ assert.equal(of(only,'2026-06-03').work,60);assert.equal(of(only,'2026-06-03').night,60);assert.equal(only.totals.workDays,0);
+});
+test('on-call responses are reported by the staff, cannot overlap, and are voided with a reason',async()=>{
+ const f=fixture(),admin=await f.setup(),nurse=await nurseOf(f,admin),y=addDays(dateKey(new Date()),-1),t=dateKey(new Date());
+ const report=(s:any,body:any)=>f.call(s,'attendance/oncall','POST',{workDate:y,kind:'CALL',start:{date:y,time:'22:30'},end:{date:y,time:'22:45'},note:'発熱の相談',...body});
+ assert.equal((await report(nurse,{})).status,200);
+ assert.equal((await report(nurse,{start:{date:y,time:'22:40'},end:{date:y,time:'23:00'}})).status,409);
+ assert.equal((await report(nurse,{start:{date:y,time:'23:00'},end:{date:y,time:'22:50'}})).status,400);
+ assert.equal((await report(nurse,{start:{date:y,time:'23:30'},end:{date:addDays(y,2),time:'00:10'}})).status,400);
+ assert.equal((await report(nurse,{workDate:addDays(t,1),start:{date:addDays(t,1),time:'01:00'},end:{date:addDays(t,1),time:'02:00'}})).status,400);
+ assert.equal((await report(nurse,{staffId:admin.id})).status,403);
+ assert.equal((await report(nurse,{workDate:'2025-01-15',start:{date:'2025-01-15',time:'22:30'},end:{date:'2025-01-15',time:'22:45'}})).status,409);
+ assert.equal((await report(admin,{staffId:nurse.id,kind:'DISPATCH',start:{date:y,time:'23:30'},end:{date:t,time:'00:20'}})).status,200);
+ let d=(await f.call(nurse,`attendance?month=${y.slice(0,7)}`)).data;const entries=d.oncall.filter((e:any)=>e.workDate===y);
+ assert.equal(entries.length,2);assert.equal(entries[0].note,'発熱の相談');assert.equal(entries[0].source,'manual');
+ assert.equal((await f.call(nurse,'attendance/oncall/void','POST',{id:entries[1].id,reason:''})).status,400);
+ assert.equal((await f.call(nurse,'attendance/oncall/void','POST',{id:entries[1].id,reason:'時刻を間違えた'})).status,200);
+ assert.equal((await f.call(nurse,'attendance/oncall/void','POST',{id:entries[1].id,reason:'二重'})).status,409);
+ d=(await f.call(nurse,`attendance?month=${y.slice(0,7)}`)).data;assert(d.oncall.find((e:any)=>e.id===entries[1].id).voidedAt);
+ const actions=(await f.call(admin,'audit')).data.map((a:any)=>a.action);assert(actions.includes('ONCALL_ADDED')&&actions.includes('ONCALL_VOIDED'));
+});
+test('admins mark on-call duty in the shift schedule and everyone sees it',async()=>{
+ const f=fixture(),admin=await f.setup(),nurse=await nurseOf(f,admin),m='2026-11';
+ assert.equal((await f.call(nurse,'shifts','POST',{month:m,oncall:[{staffId:nurse.id,day:'2026-11-02',on:true}]})).status,403);
+ assert.equal((await f.call(admin,'shifts','POST',{month:m,oncall:[{staffId:nurse.id,day:'2026-11-02',on:true},{staffId:nurse.id,day:'2026-11-03',on:true}]})).status,200);
+ assert.equal((await f.call(admin,'shifts','POST',{month:m,oncall:[{staffId:nurse.id,day:'2026-12-01',on:true}]})).status,400);
+ assert.equal((await f.call(admin,'shifts','POST',{month:m,oncall:[{staffId:nurse.id,day:'2026-11-03',on:false}]})).status,200);
+ assert.deepEqual((await f.call(nurse,`shifts?month=${m}`)).data.oncall,[{staffId:nurse.id,day:'2026-11-02'}]);
+ assert.deepEqual((await f.call(nurse,`attendance?month=${m}`)).data.duties,['2026-11-02']);
+});
+test('staff request to fix a punch; approval voids the original and keeps it',async()=>{
+ const f=fixture(),admin=await f.setup(),nurse=await nurseOf(f,admin),y=addDays(dateKey(new Date()),-1);
+ assert.equal((await f.call(admin,'attendance/corrections','POST',{staffId:nurse.id,workDate:y,add:[{kind:'IN',date:y,time:'08:30'},{kind:'OUT',date:y,time:'17:00'}],void:[],reason:'記録'})).status,200);
+ const punches=(await f.call(nurse,`attendance?month=${y.slice(0,7)}`)).data.punches.filter((p:any)=>p.workDate===y),inId=punches.find((p:any)=>p.kind==='IN').id;
+ const ask=(body:any)=>f.call(nurse,'attendance/requests','POST',{workDate:y,kind:'IN',date:y,time:'08:00',reason:'実際は8時に出勤',replaces:inId,...body});
+ assert.equal((await ask({replaces:'nope'})).status,400);
+ const r=await ask({});assert.equal(r.status,200);
+ assert.equal((await ask({})).status,409);
+ const pending=(await f.call(admin,`attendance?month=${y.slice(0,7)}`)).data.pending;assert.equal(pending[0].replaces.id,inId);assert.equal(pending[0].replaces.kind,'IN');
+ assert.equal((await f.call(admin,'attendance/requests/'+r.data.id,'PATCH',{approve:true})).status,200);
+ const after=(await f.call(nurse,`attendance?month=${y.slice(0,7)}`)).data.punches.filter((p:any)=>p.workDate===y);
+ assert(after.find((p:any)=>p.id===inId).voidedAt);const fixed=after.find((p:any)=>p.kind==='IN'&&!p.voidedAt);assert.equal(fixed.at,jstDate(y,'08:00').toISOString());assert.equal(fixed.source,'request');
+ // 申請の後に元の打刻が変わっていたら、承認しても何も変わらない。
+ const outId=after.find((p:any)=>p.kind==='OUT').id,r2=await ask({kind:'OUT',time:'18:00',replaces:outId});assert.equal(r2.status,200);
+ assert.equal((await f.call(admin,'attendance/corrections','POST',{staffId:nurse.id,workDate:y,add:[],void:[outId],reason:'管理者が先に修正'})).status,200);
+ assert.equal((await f.call(admin,'attendance/requests/'+r2.data.id,'PATCH',{approve:true})).status,409);
+ assert.equal((await f.call(nurse,`attendance?month=${y.slice(0,7)}`)).data.requests.find((q:any)=>q.id===r2.data.id).status,'PENDING');
 });

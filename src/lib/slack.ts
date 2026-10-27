@@ -1,11 +1,18 @@
 // Slack の #出勤退勤 の投稿を打刻の種類に読み替える。「出勤」「退勤」「休憩」を含む投稿だけを対象にする。
-import type {PunchKind} from './attendance';
+import type {OncallKind,PunchKind} from './attendance';
 // 予定の連絡（「明日は遅れて出勤します」など）は、投稿した時刻に働き始めたわけではないので打刻にしない。
 const notice=/できません|できない|しません|休みます|欠勤|遅れ|遅刻|明日|あした|出勤予定|退勤予定/;
-export type Parsed={kind:PunchKind}|{ignored:string}|null;
+export type Oncall={kind:OncallKind;start:string;end:string;note:string};
+export type Parsed={kind:PunchKind}|{oncall:Oncall}|{ignored:string}|null;
+export const oncallHint='オンコール中の対応は「オンコール 電話対応 22:30〜22:45」のように、対応した時刻の範囲を書いてください。';
+const range=/(\d{1,2})\s*[:：]\s*(\d{2})\s*[〜～~\-－ー―]\s*(\d{1,2})\s*[:：]\s*(\d{2})/;
+const hhmm=(h:string,m:string)=>Number(h)<24&&Number(m)<60?`${h.padStart(2,'0')}:${m}`:null;
 export function parsePunch(text:string):Parsed{
+ // 絵文字（:smile:）は英字を含むものだけを外す（「23:50-0:40」の時刻を消さないため）。
  // チャンネル名の「出勤退勤」「出退勤」は、出勤・退勤の報告ではないので取り除く。
- const t=text.replace(/<[^>]*>/g,' ').replace(/:[a-z0-9_+'-]+:/gi,' ').replace(/出勤退勤|出退勤/g,' ');
+ const t=text.replace(/<[^>]*>/g,' ').replace(/:[a-z0-9_+'-]*[a-z][a-z0-9_+'-]*:/gi,' ').replace(/出勤退勤|出退勤/g,' ');
+ // オンコール中の対応は、対応した時間だけを時刻の範囲で報告する（オンコール自体の開始・終了は報告しない）。
+ if(/オンコ/.test(t))return oncallOf(t);
  const rest=t.includes('休憩'),out=t.includes('退勤'),start=t.includes('出勤');
  if(!rest&&!out&&!start)return null;
  if(notice.test(t))return {ignored:'予定の連絡と判断したため、打刻にしませんでした。'};
@@ -21,3 +28,11 @@ export function parsePunch(text:string):Parsed{
 export const slackIds=(v:string)=>v.split(',').map(x=>x.trim()).filter(Boolean);
 // Slack の ts（秒.マイクロ秒）を日時に。
 export const tsDate=(ts:string)=>new Date(Math.round(Number(ts)*1000));
+function oncallOf(t:string):Parsed{
+ if(notice.test(t.replace(range,' ')))return {ignored:'予定の連絡と判断したため、記録しませんでした。'};
+ if(/さん/.test(t))return {ignored:'ほかの人の連絡と判断したため、記録しませんでした。本人が投稿するか、アプリで報告してください。'};
+ const m=range.exec(t),start=m&&hhmm(m[1],m[2]),end=m&&hhmm(m[3],m[4]);
+ if(!m||!start||!end)return {ignored:oncallHint};
+ const note=t.slice(m.index+m[0].length).replace(/\s+/g,' ').trim().slice(0,200);
+ return {oncall:{kind:/電話/.test(t)?'CALL':'DISPATCH',start,end,note}};
+}

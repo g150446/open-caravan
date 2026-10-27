@@ -6,12 +6,12 @@ import {z} from 'zod';
 import type {Actor,Env,Statement} from './types';
 import {assert,ApiError} from '../src/lib/errors';
 import {keySchema} from '../src/lib/validation';
-import {jstDate} from '../src/lib/date';
-import {parsePunch,slackIds,tsDate} from '../src/lib/slack';
-import {punchLabels} from '../src/lib/attendance';
+import {addDays,dateKey,jstDate} from '../src/lib/date';
+import {parsePunch,slackIds,tsDate,type Oncall} from '../src/lib/slack';
+import {oncallLabels,punchLabels} from '../src/lib/attendance';
 import {list} from './store';
 import {audit} from './auth';
-import {selfPunch} from './attendance';
+import {addOncall,checkDeadline,selfPunch} from './attendance';
 
 interface Message {type?:string;subtype?:string;bot_id?:string;user?:string;text?:string;ts:string;thread_ts?:string;}
 type Staff=Awaited<ReturnType<typeof list>>;
@@ -30,6 +30,12 @@ async function history(env:Env,channel:string,oldest:string,latest?:string){
  for(let page=0;page<10;page++){const d=await slack(env,'conversations.history',{channel,oldest,...(latest?{latest}:{}),limit:'200',...(cursor?{cursor}:{})});messages.push(...d.messages??[]);cursor=d.response_metadata?.next_cursor??'';if(!d.has_more||!cursor)break;}
  return messages.sort((a,b)=>Number(a.ts)-Number(b.ts));
 }
+// オンコールの時刻は、投稿した時刻より前でいちばん近い回とみなす（0:10 に「23:30〜0:05」なら前の日の 23:30 から）。
+export function oncallTimes(o:Oncall,posted:Date){
+ const day=dateKey(posted);let endDay=day;if(jstDate(endDay,o.end)>posted)endDay=addDays(endDay,-1);
+ const end=jstDate(endDay,o.end),start=o.start<o.end?jstDate(endDay,o.start):jstDate(addDays(endDay,-1),o.start);
+ return {start,end};
+}
 const appHint='必要なら、Open Caravan の勤怠の「詳細・申請」から修正を申請してください。';
 const activeStaff=async(env:Env)=>(await list(env.DB,'staff')).filter(s=>s.active&&!s.deleted&&s.slackUserId);
 // スレッドの返信、bot、参加通知などは対象にしない。
@@ -38,12 +44,15 @@ const parsedOf=(m:Message)=>m.type==='message'&&!m.subtype&&!m.bot_id&&m.user&&(
 async function handle(env:Env,channel:string,m:Message,staff:Staff,now:string,live:boolean,after:Statement[]):Promise<'PUNCHED'|'REJECTED'|'SKIPPED'>{
  const parsed=parsedOf(m),id=`${channel}:${m.ts}`;
  if(!parsed||await env.DB.prepare('SELECT 1 AS ok FROM slack_events WHERE id=?').bind(id).first()){if(after.length)await env.DB.batch(after);return 'SKIPPED';}
- const postedAt=tsDate(m.ts).toISOString(),text=(m.text??'').slice(0,200),person=staff.find(s=>slackIds(String(s.slackUserId)).includes(m.user!)),kind='kind' in parsed?parsed.kind:null;
+ const postedAt=tsDate(m.ts).toISOString(),text=(m.text??'').slice(0,200),person=staff.find(s=>slackIds(String(s.slackUserId)).includes(m.user!)),kind='kind' in parsed?parsed.kind:'oncall' in parsed?'ONCALL':null;
  let reason='ignored' in parsed?parsed.ignored:!person?'この Slack アカウントは Open Caravan のスタッフに紐付いていないため、打刻にしませんでした。管理者にスタッフ情報の「Slack メンバーID」の登録を頼んでください。':'';
  if(!reason&&person&&kind){
-  try{await selfPunch(env,person.id,kind,tsDate(m.ts),'Slack',punchId=>[env.DB.prepare("INSERT INTO slack_events(id,slack_user,staff_id,punch_id,text,kind,status,posted_at,created_at) VALUES(?,?,?,?,?,?,'PUNCHED',?,?)").bind(id,m.user,person.id,punchId,text,kind,postedAt,now),...after]);
+  try{
+   if('oncall' in parsed){const o=parsed.oncall,t=oncallTimes(o,tsDate(m.ts));checkDeadline(false,dateKey(t.start));
+    await addOncall(env,person.id,{kind:o.kind,...t,note:o.note},person.id,'slack',entryId=>[env.DB.prepare("INSERT INTO slack_events(id,slack_user,staff_id,punch_id,text,kind,status,posted_at,created_at) VALUES(?,?,?,?,?,'ONCALL','PUNCHED',?,?)").bind(id,m.user,person.id,entryId,text,postedAt,now),...after]);}
+   else if('kind' in parsed)await selfPunch(env,person.id,parsed.kind,tsDate(m.ts),'Slack',punchId=>[env.DB.prepare("INSERT INTO slack_events(id,slack_user,staff_id,punch_id,text,kind,status,posted_at,created_at) VALUES(?,?,?,?,?,?,'PUNCHED',?,?)").bind(id,m.user,person.id,punchId,text,kind,postedAt,now),...after]);
    if(live)await notify(env,'reactions.add',{channel,timestamp:m.ts,name:'white_check_mark'});return 'PUNCHED';}
-  catch(e){if(!(e instanceof ApiError))throw e;reason=`${punchLabels[kind]}の打刻にしませんでした：${e.message}`;}
+  catch(e){if(!(e instanceof ApiError))throw e;reason='oncall' in parsed?`オンコール（${oncallLabels[parsed.oncall.kind]}）を記録しませんでした：${e.message}`:`${punchLabels[kind as keyof typeof punchLabels]}の打刻にしませんでした：${e.message}`;}
  }
  await env.DB.batch([env.DB.prepare("INSERT OR IGNORE INTO slack_events(id,slack_user,staff_id,text,kind,status,message,posted_at,created_at) VALUES(?,?,?,?,?,'REJECTED',?,?,?)").bind(id,m.user,person?.id??null,text,kind,reason,postedAt,now),...after]);
  if(live)await notify(env,'chat.postMessage',{channel,thread_ts:m.ts,text:`${reason}\n${appHint}`});

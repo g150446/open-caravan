@@ -6,17 +6,21 @@ import type {CertificateRequest} from './client-cert';
 import {assert,ApiError} from '../src/lib/errors';
 import {keySchema,monthSchema,punchKindSchema,reasonSchema,shiftSchema,timeSchema} from '../src/lib/validation';
 import {addDays,dateKey,jstDate} from '../src/lib/date';
-import {allowedNext,monthEnd,selfDeadline,weekStartOf,type Punch,type PunchKind,type PunchRequest,type Shift} from '../src/lib/attendance';
+import {allowedNext,monthEnd,selfDeadline,weekStartOf,type Punch,type PunchKind,type PunchRequest,type Shift,type OncallEntry,type OncallKind} from '../src/lib/attendance';
 import {audit} from './auth';
 import {get} from './store';
 import {getSettings} from './routes';
 
 type PunchRow={id:string;staff_id:string;work_date:string;kind:Punch['kind'];at:string;source:Punch['source'];device:string|null;reason:string|null;created_by:string;created_at:string;voided_at:string|null;voided_by:string|null;void_reason:string|null};
-type RequestRow={id:string;staff_id:string;work_date:string;kind:Punch['kind'];at:string;reason:string;status:PunchRequest['status'];created_at:string;decided_by:string|null;decided_at:string|null;decision_note:string|null};
+type RequestRow={replaces_id?:string|null;replaces_kind?:PunchKind|null;replaces_at?:string|null;id:string;staff_id:string;work_date:string;kind:Punch['kind'];at:string;reason:string;status:PunchRequest['status'];created_at:string;decided_by:string|null;decided_at:string|null;decision_note:string|null};
+type OncallRow={id:string;staff_id:string;work_date:string;kind:OncallKind;start_at:string;end_at:string;note:string;source:OncallEntry['source'];created_by:string;created_at:string;voided_at:string|null;voided_by:string|null;void_reason:string|null};
 type ShiftRow={staff_id:string;day:string;kind:Shift['kind'];pattern:string|null;start:string|null;end:string|null;break_minutes:number;note:string;version:number};
 const punchOf=(r:PunchRow):Punch=>({id:r.id,staffId:r.staff_id,workDate:r.work_date,kind:r.kind,at:r.at,source:r.source,device:r.device,reason:r.reason,createdBy:r.created_by,createdAt:r.created_at,voidedAt:r.voided_at,voidedBy:r.voided_by,voidReason:r.void_reason});
-const requestOf=(r:RequestRow):PunchRequest=>({id:r.id,staffId:r.staff_id,workDate:r.work_date,kind:r.kind,at:r.at,reason:r.reason,status:r.status,createdAt:r.created_at,decidedBy:r.decided_by,decidedAt:r.decided_at,decisionNote:r.decision_note});
+const requestOf=(r:RequestRow):PunchRequest=>({id:r.id,staffId:r.staff_id,workDate:r.work_date,kind:r.kind,at:r.at,reason:r.reason,status:r.status,createdAt:r.created_at,decidedBy:r.decided_by,decidedAt:r.decided_at,decisionNote:r.decision_note,replaces:r.replaces_id?{id:r.replaces_id,kind:r.replaces_kind!,at:r.replaces_at!}:null});
+const oncallOf=(r:OncallRow):OncallEntry=>({id:r.id,staffId:r.staff_id,workDate:r.work_date,kind:r.kind,start:r.start_at,end:r.end_at,note:r.note,source:r.source,createdBy:r.created_by,createdAt:r.created_at,voidedAt:r.voided_at,voidedBy:r.voided_by,voidReason:r.void_reason});
 const shiftOf=(r:ShiftRow):Shift=>({staffId:r.staff_id,day:r.day,kind:r.kind,pattern:r.pattern,start:r.start,end:r.end,breakMinutes:r.break_minutes,note:r.note,version:r.version});
+// 申請に、直す打刻（あれば）を付けて読む。
+const requestSelect='SELECT r.*,x.punch_id AS replaces_id,p.kind AS replaces_kind,p.at AS replaces_at FROM punch_requests r LEFT JOIN punch_request_replaces x ON x.request_id=r.id LEFT JOIN punches p ON p.id=x.punch_id';
 const insertPunch=(env:Env,p:Omit<Punch,'voidedAt'|'voidedBy'|'voidReason'>)=>env.DB.prepare('INSERT INTO punches(id,staff_id,work_date,kind,at,source,device,reason,created_by,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)').bind(p.id,p.staffId,p.workDate,p.kind,p.at,p.source,p.device,p.reason,p.createdBy,p.createdAt);
 // 直前の文が1行も変えなければ、CHECK 制約で batch 全体を取り消す（store.ts の commit と同じ仕組み）。
 async function guarded(env:Env,steps:(Statement|{changed:Statement})[],message:string){
@@ -62,8 +66,18 @@ const at=(date:string,time:string)=>jstDate(date,time).toISOString();
 const entrySchema=z.object({kind:punchKindSchema,date:keySchema,time:timeSchema});
 // 打刻の日時は勤務日かその翌日（夜勤の退勤）に限る。
 // 本人の申請・申告は翌月10日まで。管理者は期限の後も修正・承認できる（賃金の請求権は期限で消えないため）。
-const checkDeadline=(admin:boolean,workDate:string)=>assert(admin||dateKey(new Date())<=selfDeadline(workDate),409,`${Number(workDate.slice(5,7))}月の勤怠の申請期限（${selfDeadline(workDate)}）を過ぎています。管理者に修正を依頼してください。`);
+export const checkDeadline=(admin:boolean,workDate:string)=>assert(admin||dateKey(new Date())<=selfDeadline(workDate),409,`${Number(workDate.slice(5,7))}月の勤怠の申請期限（${selfDeadline(workDate)}）を過ぎています。管理者に修正を依頼してください。`);
 const checkEntry=(workDate:string,e:{date:string})=>assert(e.date===workDate||e.date===addDays(workDate,1),400,'打刻の日付は勤務日か翌日にしてください。');
+
+const oncallSchema=z.object({kind:z.enum(['CALL','DISPATCH']),note:z.string().trim().max(200).default('')});
+// オンコール中の対応の報告（アプリと Slack）。開始〜終了の1件で、同じスタッフのほかの報告と重なるものは受け付けない。
+export async function addOncall(env:Env,staffId:string,e:{kind:OncallKind;start:Date;end:Date;note:string},createdBy:string,source:OncallEntry['source'],extra:(id:string)=>Statement[]=()=>[]){
+ const start=e.start.toISOString(),end=e.end.toISOString(),now=new Date().toISOString(),workDate=dateKey(e.start);
+ assert(end>start,400,'終了は開始より後にしてください。');assert(e.end.getTime()-e.start.getTime()<=86400000,400,'1件の対応は24時間以内にしてください。');assert(end<=now,400,'これからの時刻は報告できません。');
+ const id=crypto.randomUUID();
+ await guarded(env,[{changed:env.DB.prepare('INSERT INTO oncall_entries(id,staff_id,work_date,kind,start_at,end_at,note,source,created_by,created_at) SELECT ?,?,?,?,?,?,?,?,?,? WHERE NOT EXISTS(SELECT 1 FROM oncall_entries WHERE staff_id=? AND voided_at IS NULL AND start_at<? AND end_at>?)').bind(id,staffId,workDate,e.kind,start,end,e.note,source,createdBy,now,staffId,end,start)},audit(env,createdBy,'ONCALL_ADDED',staffId+':'+workDate),...extra(id)],'同じ時間帯のオンコール対応がすでに報告されています。');
+ return {id,workDate};
+}
 
 export async function attendance(req:Request,env:Env,actor:Actor,method:string,id:string|undefined,operation:string|undefined,params:URLSearchParams,body:Record<string,unknown>|null){
  const admin=actor.role==='ADMIN',now=new Date().toISOString();
@@ -73,22 +87,40 @@ export async function attendance(req:Request,env:Env,actor:Actor,method:string,i
   const staffId=params.get('staffId')||actor.id,month=monthSchema.parse(params.get('month'));assert(admin||staffId===actor.id,403,'自分の勤怠だけを閲覧できます。');
   assert(await get(env.DB,staffId,'staff'),404,'スタッフが見つかりません。');
   const settings=await getSettings(env.DB),from=weekStartOf(month+'-01',settings.weekStartWeekday),to=monthEnd(month);
-  const [punches,requests,shifts,confirmed,pending,waivers]=await Promise.all([
+  const [punches,requests,shifts,confirmed,pending,waivers,oncall,duties]=await Promise.all([
    env.DB.prepare('SELECT * FROM punches WHERE staff_id=? AND work_date>=? AND work_date<=? ORDER BY at').bind(staffId,from,to).all<PunchRow>(),
-   env.DB.prepare('SELECT * FROM punch_requests WHERE staff_id=? AND work_date>=? AND work_date<=? ORDER BY created_at').bind(staffId,from,to).all<RequestRow>(),
+   env.DB.prepare(requestSelect+' WHERE r.staff_id=? AND r.work_date>=? AND r.work_date<=? ORDER BY r.created_at').bind(staffId,from,to).all<RequestRow>(),
    env.DB.prepare('SELECT * FROM shifts WHERE staff_id=? AND day>=? AND day<=?').bind(staffId,from,to).all<ShiftRow>(),
    env.DB.prepare('SELECT * FROM shift_months WHERE month=?').bind(month).first<{confirmed_at:string;confirmed_by:string}>(),
-   admin?env.DB.prepare("SELECT * FROM punch_requests WHERE status='PENDING' ORDER BY created_at").all<RequestRow>():Promise.resolve({results:[] as RequestRow[]}),
-   env.DB.prepare('SELECT * FROM break_waivers WHERE staff_id=? AND work_date>=? AND work_date<=? ORDER BY work_date').bind(staffId,from,to).all<{work_date:string;reason:string;created_by:string;created_at:string;revoked_at:string|null;revoked_by:string|null}>()]);
+   admin?env.DB.prepare(requestSelect+" WHERE r.status='PENDING' ORDER BY r.created_at").all<RequestRow>():Promise.resolve({results:[] as RequestRow[]}),
+   env.DB.prepare('SELECT * FROM break_waivers WHERE staff_id=? AND work_date>=? AND work_date<=? ORDER BY work_date').bind(staffId,from,to).all<{work_date:string;reason:string;created_by:string;created_at:string;revoked_at:string|null;revoked_by:string|null}>(),
+   env.DB.prepare('SELECT * FROM oncall_entries WHERE staff_id=? AND work_date>=? AND work_date<=? ORDER BY start_at').bind(staffId,from,to).all<OncallRow>(),
+   env.DB.prepare('SELECT day FROM oncall_duties WHERE staff_id=? AND day>=? AND day<=? ORDER BY day').bind(staffId,month+'-01',to).all<{day:string}>()]);
   // Slack の投稿で打刻にならなかったもの（この7日に取り込んだ分）。管理者が本人に確かめるために出す。
   const slackRejected=admin?(await env.DB.prepare("SELECT id,slack_user,staff_id,text,message,posted_at FROM slack_events WHERE status='REJECTED' AND created_at>=? ORDER BY posted_at DESC LIMIT 100").bind(new Date(Date.now()-7*86400000).toISOString()).all<{id:string;slack_user:string;staff_id:string|null;text:string;message:string;posted_at:string}>()).results.map(r=>({id:r.id,slackUser:r.slack_user,staffId:r.staff_id,text:r.text,message:r.message,postedAt:r.posted_at})):[];
-  return {punches:punches.results.map(punchOf),requests:requests.results.map(requestOf),shifts:shifts.results.map(shiftOf),confirmed:confirmed?{at:confirmed.confirmed_at,by:confirmed.confirmed_by}:null,pending:pending.results.map(requestOf),slackRejected,waivers:waivers.results.map(w=>({workDate:w.work_date,reason:w.reason,createdBy:w.created_by,createdAt:w.created_at,revokedAt:w.revoked_at,revokedBy:w.revoked_by}))};
+  return {punches:punches.results.map(punchOf),requests:requests.results.map(requestOf),shifts:shifts.results.map(shiftOf),confirmed:confirmed?{at:confirmed.confirmed_at,by:confirmed.confirmed_by}:null,pending:pending.results.map(requestOf),slackRejected,waivers:waivers.results.map(w=>({workDate:w.work_date,reason:w.reason,createdBy:w.created_by,createdAt:w.created_at,revokedAt:w.revoked_at,revokedBy:w.revoked_by})),oncall:oncall.results.map(oncallOf),duties:duties.results.map(d=>d.day)};
  }
  assert(method==='POST'||method==='PATCH',405,'操作できません。');assert(body,400,'送信データが不正です。');
  if(id==='punch'&&!operation&&method==='POST'){
   // 時刻はサーバーの時計で決める。画面から時刻は受け取らない。
   await selfPunch(env,actor.id,punchKindSchema.parse(body.kind),new Date(),await deviceOf(req as CertificateRequest,env));
   return {ok:true,...await status(env,actor.id)};
+ }
+ if(id==='oncall'&&method==='POST'&&operation==='void'){
+  // 報告の取り消し。理由は必須で、行は残す。本人は期限内だけ、管理者はいつでも。
+  const entryId=z.string().max(100).parse(body.id),reason=reasonSchema.parse(body.reason);
+  const row=await env.DB.prepare('SELECT * FROM oncall_entries WHERE id=?').bind(entryId).first<OncallRow>();assert(row,404,'報告が見つかりません。');
+  assert(admin||row.staff_id===actor.id,403,'自分の報告だけを取り消せます。');checkDeadline(admin,row.work_date);
+  await guarded(env,[{changed:env.DB.prepare('UPDATE oncall_entries SET voided_at=?,voided_by=?,void_reason=? WHERE id=? AND voided_at IS NULL').bind(now,actor.id,reason,entryId)},audit(env,actor.id,'ONCALL_VOIDED',row.staff_id+':'+row.work_date)],'この報告はすでに取り消されています。');
+  return {ok:true};
+ }
+ if(id==='oncall'&&method==='POST'&&!operation){
+  // 画面からの報告。本人（管理者は代わりに）。開始は勤務日か翌日。
+  const staffId=z.string().max(100).optional().parse(body.staffId)??actor.id,workDate=keySchema.parse(body.workDate),o=oncallSchema.parse(body),start=entrySchema.pick({date:true,time:true}).parse(body.start),end=entrySchema.pick({date:true,time:true}).parse(body.end);
+  assert(admin||staffId===actor.id,403,'自分の勤怠だけを報告できます。');const s=await get(env.DB,staffId,'staff');assert(s&&!s.deleted,404,'スタッフが見つかりません。');
+  checkEntry(workDate,start);assert(end.date>=start.date&&end.date<=addDays(start.date,1),400,'終了の日付は開始の日か翌日にしてください。');
+  const startAt=jstDate(start.date,start.time);checkDeadline(admin,dateKey(startAt));
+  return {ok:true,...await addOncall(env,staffId,{kind:o.kind,start:startAt,end:jstDate(end.date,end.time),note:o.note},actor.id,'manual')};
  }
  if(id==='break-waiver'&&method==='POST'){
   // 「休憩を取れなかった」の申告。本人（管理者は代わりに）が理由を付けて出し、その日は休憩を自動で差し引かない。取り消しは管理者だけで、行は残す。
@@ -106,18 +138,25 @@ export async function attendance(req:Request,env:Env,actor:Actor,method:string,i
   // 打ち忘れなどの申請は本人だけが出す。承認されるまで勤怠には入らない。
   const workDate=keySchema.parse(body.workDate),entry=entrySchema.parse(body),reason=reasonSchema.parse(body.reason);checkEntry(workDate,entry);checkDeadline(admin,workDate);
   const time=at(entry.date,entry.time);assert(time<=now,400,'これからの時刻は申請できません。');
-  const r={id:crypto.randomUUID()};
-  await env.DB.batch([env.DB.prepare("INSERT INTO punch_requests(id,staff_id,work_date,kind,at,reason,status,created_at) VALUES(?,?,?,?,?,?,'PENDING',?)").bind(r.id,actor.id,workDate,entry.kind,time,reason,now),audit(env,actor.id,'PUNCH_REQUESTED',r.id)]);
+  // replaces があれば、その打刻を直す申請。本人の同じ勤務日の、取り消されていない打刻に限る。
+  const replaces=z.string().max(100).optional().parse(body.replaces||undefined),r={id:crypto.randomUUID()};
+  if(replaces){
+   assert(await env.DB.prepare('SELECT 1 AS ok FROM punches WHERE id=? AND staff_id=? AND work_date=? AND voided_at IS NULL').bind(replaces,actor.id,workDate).first(),400,'直す打刻が見つかりません。');
+   assert(!await env.DB.prepare("SELECT 1 AS ok FROM punch_request_replaces x JOIN punch_requests r ON r.id=x.request_id WHERE x.punch_id=? AND r.status='PENDING'").bind(replaces).first(),409,'この打刻には承認待ちの申請があります。');
+  }
+  await env.DB.batch([env.DB.prepare("INSERT INTO punch_requests(id,staff_id,work_date,kind,at,reason,status,created_at) VALUES(?,?,?,?,?,?,'PENDING',?)").bind(r.id,actor.id,workDate,entry.kind,time,reason,now),...(replaces?[env.DB.prepare('INSERT INTO punch_request_replaces(request_id,punch_id) VALUES(?,?)').bind(r.id,replaces)]:[]),audit(env,actor.id,'PUNCH_REQUESTED',r.id)]);
   return {ok:true,id:r.id};
  }
  if(id==='requests'&&operation&&method==='PATCH'){
   assert(admin,403,'管理者のみ操作できます。');
-  const r=await env.DB.prepare('SELECT * FROM punch_requests WHERE id=?').bind(operation).first<RequestRow>();assert(r,404,'申請が見つかりません。');assert(r.status==='PENDING',409,'すでに処理された申請です。');
+  const r=await env.DB.prepare(requestSelect+' WHERE r.id=?').bind(operation).first<RequestRow>();assert(r,404,'申請が見つかりません。');assert(r.status==='PENDING',409,'すでに処理された申請です。');
   const approve=z.boolean().parse(body.approve),note=z.string().trim().max(500).default('').parse(body.note);assert(approve||note,400,'却下の理由を入力してください。');
   const steps:(Statement|{changed:Statement})[]=[{changed:env.DB.prepare("UPDATE punch_requests SET status=?,decided_by=?,decided_at=?,decision_note=? WHERE id=? AND status='PENDING'").bind(approve?'APPROVED':'REJECTED',actor.id,now,note,r.id)}];
+  // 打刻を直す申請は、元の打刻を取り消し済みにしてから足す。元の打刻がすでに変わっていれば何も反映しない。
+  if(approve&&r.replaces_id)steps.push({changed:env.DB.prepare('UPDATE punches SET voided_at=?,voided_by=?,void_reason=? WHERE id=? AND voided_at IS NULL').bind(now,actor.id,r.reason,r.replaces_id)});
   if(approve)steps.push(insertPunch(env,{id:crypto.randomUUID(),staffId:r.staff_id,workDate:r.work_date,kind:r.kind,at:r.at,source:'request',device:null,reason:r.reason+(note?`（承認: ${note}）`:''),createdBy:actor.id,createdAt:now}));
   steps.push(audit(env,actor.id,approve?'PUNCH_REQUEST_APPROVED':'PUNCH_REQUEST_REJECTED',r.id));
-  await guarded(env,steps,'すでに処理された申請です。');return {ok:true};
+  await guarded(env,steps,r.replaces_id?'すでに処理された申請か、直す打刻が変更されています。再読込してください。':'すでに処理された申請です。');return {ok:true};
  }
  if(id==='corrections'&&!operation&&method==='POST'){
   // 管理者の修正。理由は必須。取り消す打刻は残し、全部反映されるか1件も反映されないかのどちらか。
@@ -138,8 +177,8 @@ export async function shifts(env:Env,actor:Actor,method:string,id:string|undefin
  if(method==='GET'&&!id){
   // 勤務予定表は全員が見られる。
   const month=monthSchema.parse(params.get('month'));
-  const [rows,confirmed]=await Promise.all([env.DB.prepare('SELECT * FROM shifts WHERE day>=? AND day<=?').bind(month+'-01',monthEnd(month)).all<ShiftRow>(),env.DB.prepare('SELECT * FROM shift_months WHERE month=?').bind(month).first<{confirmed_at:string;confirmed_by:string}>()]);
-  return {shifts:rows.results.map(shiftOf),confirmed:confirmed?{at:confirmed.confirmed_at,by:confirmed.confirmed_by}:null};
+  const [rows,confirmed,oncall]=await Promise.all([env.DB.prepare('SELECT * FROM shifts WHERE day>=? AND day<=?').bind(month+'-01',monthEnd(month)).all<ShiftRow>(),env.DB.prepare('SELECT * FROM shift_months WHERE month=?').bind(month).first<{confirmed_at:string;confirmed_by:string}>(),env.DB.prepare('SELECT staff_id,day FROM oncall_duties WHERE day>=? AND day<=?').bind(month+'-01',monthEnd(month)).all<{staff_id:string;day:string}>()]);
+  return {shifts:rows.results.map(shiftOf),confirmed:confirmed?{at:confirmed.confirmed_at,by:confirmed.confirmed_by}:null,oncall:oncall.results.map(d=>({staffId:d.staff_id,day:d.day}))};
  }
  assert(method==='POST',405,'操作できません。');assert(actor.role==='ADMIN',403,'管理者のみ操作できます。');assert(body,400,'送信データが不正です。');
  const month=monthSchema.parse(body.month),now=new Date().toISOString(),confirmed=await env.DB.prepare('SELECT 1 AS ok FROM shift_months WHERE month=?').bind(month).first();
@@ -151,14 +190,17 @@ export async function shifts(env:Env,actor:Actor,method:string,id:string|undefin
  assert(!id,404,'APIがありません。');
  // version 0 は新しいセル。保存は version で競合を確かめ、全部反映されるか1件も反映されないかのどちらか。
  const items=z.array(shiftSchema).max(500).parse(body.items??[]),removes=z.array(z.object({staffId:z.string().max(100),day:keySchema,version:z.number().int().positive()})).max(500).parse(body.remove??[]);
- const keys=[...items,...removes].map(i=>i.staffId+'|'+i.day);assert(keys.length,400,'変更する予定がありません。');assert(new Set(keys).size===keys.length,400,'同じ日の予定が重複しています。');
- for(const i of [...items,...removes]){assert(i.day.slice(0,7)===month,400,'対象の月の日付を指定してください。');}
- for(const staffId of new Set([...items,...removes].map(i=>i.staffId))){const s=await get(env.DB,staffId,'staff');assert(s&&!s.deleted,400,'スタッフが見つかりません。');}
+ // オンコール当番は勤務とは別の印。付けるか外すかだけで、version は持たない。
+ const oncall=z.array(z.object({staffId:z.string().max(100),day:keySchema,on:z.boolean()})).max(500).parse(body.oncall??[]);
+ const keys=[...items,...removes].map(i=>i.staffId+'|'+i.day);assert(keys.length||oncall.length,400,'変更する予定がありません。');assert(new Set(oncall.map(i=>i.staffId+'|'+i.day)).size===oncall.length,400,'同じ日の当番が重複しています。');assert(new Set(keys).size===keys.length,400,'同じ日の予定が重複しています。');
+ for(const i of [...items,...removes,...oncall]){assert(i.day.slice(0,7)===month,400,'対象の月の日付を指定してください。');}
+ for(const staffId of new Set([...items,...removes,...oncall].map(i=>i.staffId))){const s=await get(env.DB,staffId,'staff');assert(s&&!s.deleted,400,'スタッフが見つかりません。');}
  const steps:(Statement|{changed:Statement})[]=items.map(i=>{const v=[i.kind,i.kind==='WORK'?i.pattern:null,i.kind==='WORK'?i.start:null,i.kind==='WORK'?i.end:null,i.kind==='WORK'?i.breakMinutes:0,i.note,i.version+1,actor.id,now];
   return {changed:i.version?env.DB.prepare('UPDATE shifts SET kind=?,pattern=?,start=?,end=?,break_minutes=?,note=?,version=?,updated_by=?,updated_at=? WHERE staff_id=? AND day=? AND version=?').bind(...v,i.staffId,i.day,i.version):env.DB.prepare('INSERT INTO shifts(kind,pattern,start,end,break_minutes,note,version,updated_by,updated_at,staff_id,day) VALUES(?,?,?,?,?,?,?,?,?,?,?)').bind(...v,i.staffId,i.day)};});
  for(const r of removes)steps.push({changed:env.DB.prepare('DELETE FROM shifts WHERE staff_id=? AND day=? AND version=?').bind(r.staffId,r.day,r.version)});
+ for(const d of oncall)steps.push(d.on?env.DB.prepare('INSERT OR IGNORE INTO oncall_duties(staff_id,day,created_by,created_at) VALUES(?,?,?,?)').bind(d.staffId,d.day,actor.id,now):env.DB.prepare('DELETE FROM oncall_duties WHERE staff_id=? AND day=?').bind(d.staffId,d.day));
  // 確定した後の変更も受け付けるが、変更履歴で分かるようにする。
- steps.push(audit(env,actor.id,confirmed?'SHIFTS_CHANGED_AFTER_CONFIRM':'SHIFTS_SAVED',month+':'+keys.length));
+ steps.push(audit(env,actor.id,confirmed?'SHIFTS_CHANGED_AFTER_CONFIRM':'SHIFTS_SAVED',month+':'+keys.length+(oncall.length?`+oncall${oncall.length}`:'')));
  await guarded(env,steps,'別のスタッフが勤務予定を更新しました。再読込してください。');
  return {ok:true};
 }

@@ -22,7 +22,7 @@ function MenuButton({label,items}:{label:string;items:MenuItem[]}){
 const empty:Masters={staff:[],patients:[],facilities:[]};
 const laneKey=(ids:string[])=>[ids[0],...ids.slice(1).sort()].join('|');
 // データの変更ではない出来事（ログインや証明書の拒否）は名前を付けて表示する。
-const auditLabels:Record<string,string>={LOGIN:'ログイン',LOGIN_FAILED:'ログイン失敗',LOGOUT:'ログアウト',CERT_REJECTED:'証明書で拒否',PUNCH_IN:'出勤の打刻',PUNCH_OUT:'退勤の打刻',PUNCH_BREAK_START:'休憩開始の打刻',PUNCH_BREAK_END:'休憩終了の打刻',PUNCH_REQUESTED:'打刻の修正を申請',PUNCH_REQUEST_APPROVED:'打刻の申請を承認',PUNCH_REQUEST_REJECTED:'打刻の申請を却下',ATTENDANCE_CORRECTED:'勤怠を修正',SHIFTS_SAVED:'勤務予定を保存',SHIFTS_CONFIRMED:'勤務予定を確定',SHIFTS_CHANGED_AFTER_CONFIRM:'確定後に勤務予定を変更',SLACK_IMPORTED:'Slack の過去の投稿を取り込み',BREAK_WAIVED:'休憩を取れなかったと申告',BREAK_WAIVER_REVOKED:'休憩の申告を取り消し'};
+const auditLabels:Record<string,string>={LOGIN:'ログイン',LOGIN_FAILED:'ログイン失敗',LOGOUT:'ログアウト',CERT_REJECTED:'証明書で拒否',PUNCH_IN:'出勤の打刻',PUNCH_OUT:'退勤の打刻',PUNCH_BREAK_START:'休憩開始の打刻',PUNCH_BREAK_END:'休憩終了の打刻',PUNCH_REQUESTED:'打刻の修正を申請',PUNCH_REQUEST_APPROVED:'打刻の申請を承認',PUNCH_REQUEST_REJECTED:'打刻の申請を却下',ATTENDANCE_CORRECTED:'勤怠を修正',SHIFTS_SAVED:'勤務予定を保存',SHIFTS_CONFIRMED:'勤務予定を確定',SHIFTS_CHANGED_AFTER_CONFIRM:'確定後に勤務予定を変更',SLACK_IMPORTED:'Slack の過去の投稿を取り込み',BREAK_WAIVED:'休憩を取れなかったと申告',BREAK_WAIVER_REVOKED:'休憩の申告を取り消し',ONCALL_ADDED:'オンコール対応の報告',ONCALL_VOIDED:'オンコール対応の取り消し'};
 const dateLabel=(key:string)=>new Intl.DateTimeFormat('ja-JP',{month:'long',day:'numeric',weekday:'short',timeZone:'Asia/Tokyo'}).format(new Date(key+'T00:00:00+09:00'));
 function Logo(){return <span className="brand"><span className="brand-mark">✣</span><span>Open Caravan<small>訪問診療の予定管理</small></span></span>;}
 function Auth({onLogin,setupToken}:{onLogin:(s:Staff,csrf:string)=>void;setupToken:string}){
