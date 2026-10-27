@@ -64,7 +64,10 @@ test('Slack posts become punches at the posted time, once, with a reaction',asyn
   await f.tick();await f.tick();
   const punches=(await f.call(n,`attendance?month=${month()}`)).data.punches;
   assert.equal(punches.length,1);assert.equal(punches[0].kind,'IN');assert.equal(punches[0].at,tsDate(posted).toISOString());assert.equal(punches[0].device,'Slack');assert.equal(punches[0].source,'punch');
-  assert.deepEqual(slack.state.calls,[{method:'reactions.add',body:{channel:'C0TEST',timestamp:posted,name:'white_check_mark'}}]);
+  // 打刻できた投稿には ✅ と結果の返信、キーワードのない投稿には登録しなかった旨の返信。参加通知には返さない。
+  assert.deepEqual(slack.state.calls.map(c=>[c.method,c.body.timestamp??c.body.thread_ts]),[['reactions.add',posted],['chat.postMessage',posted],['chat.postMessage',(base+0.001).toFixed(6)]]);
+  assert.match(slack.state.calls[1].body.text,new RegExp(`^出勤として打刻しました（\\d+/\\d+ ${timeKey(tsDate(posted))}）`));
+  assert.match(slack.state.calls[2].body.text,/キーワードがなかったため/);assert.match(slack.state.calls[2].body.text,/書き方：/);
   assert((await f.call(admin,'audit')).data.some((a:any)=>a.action==='PUNCH_IN'&&a.actor_id===n.id));
   // アプリの打刻とも状態を共有する：Slack で出勤した後、アプリでは退勤だけが押せる。
   await new Promise(r=>setTimeout(r,20));
@@ -83,12 +86,13 @@ test('posts that cannot be punched get a thread reply and are listed for admins'
   await f.tick();
   const replies=slack.state.calls.filter(c=>c.method==='chat.postMessage');assert.equal(replies.length,3);
   assert(replies.every(r=>r.body.thread_ts&&r.body.channel==='C0TEST'));
-  assert.match(replies[0].body.text,/すでに出勤しています/);assert.match(replies[1].body.text,/紐付いていない/);assert.match(replies[2].body.text,/予定の連絡/);
+  assert.match(replies[0].body.text,/すでに出勤しています/);assert(replies.every(r=>r.body.text.includes('書き方：')));assert.match(replies[1].body.text,/紐付いていない/);assert.match(replies[2].body.text,/予定の連絡/);
   assert.equal((await f.call(n,`attendance?month=${month()}`)).data.punches.length,1);
   const rejected=(await f.call(admin,`attendance?month=${month()}`)).data.slackRejected;assert.equal(rejected.length,3);assert.equal(rejected.find((r:any)=>r.slackUser==='U0OTHER99').staffId,null);
   assert.deepEqual((await f.call(n,`attendance?month=${month()}`)).data.slackRejected,[]);
-  // 失敗した投稿も二度は返信しない。
-  await f.tick();assert.equal(slack.state.calls.length,3);
+  // 失敗した投稿も、キーワードのない投稿も二度は返信しない。スレッドの返信と bot の投稿には返信しない。
+  slack.state.messages.push({type:'message',user:'U0NURSE01',text:'よろしくお願いします',ts:ts(-0.04)},{type:'message',user:'U0NURSE01',text:'了解です',ts:ts(-0.05),thread_ts:ts(-0.04)},{type:'message',bot_id:'B0BOT',user:'U0BOT',text:'記録しました',ts:ts(-0.06)});
+  await f.tick();await f.tick();assert.equal(slack.state.calls.length,4);assert.match(slack.state.calls[3].body.text,/キーワードがなかった/);
  }finally{slack.restore();}
 });
 test('Slack errors leave the position unchanged so the next minute retries',async()=>{
@@ -154,6 +158,17 @@ test('on-call posts report the response time as a range, dated back from the pos
  assert.deepEqual(parsePunch('オンコール出動 23:50-0:40'),{oncall:{kind:'DISPATCH',start:'23:50',end:'00:40',note:''}});
  assert.match((parsePunch('オンコール出動します') as {ignored:string}).ignored,/時刻の範囲/);
  assert.match((parsePunch('明日オンコールです') as {ignored:string}).ignored,/予定/);
+ // 「18時から18時5分」のような書き方、全角、電話対応と出動のそれぞれの言葉。
+ assert.deepEqual(parsePunch('オンコール 電話対応 18時から18時5分まで'),{oncall:{kind:'CALL',start:'18:00',end:'18:05',note:''}});
+ assert.deepEqual(parsePunch('オンコール 18:00-18:05 電話対応'),{oncall:{kind:'CALL',start:'18:00',end:'18:05',note:'電話対応'}});
+ assert.deepEqual(parsePunch('オンコール出動 18時半〜19時'),{oncall:{kind:'DISPATCH',start:'18:30',end:'19:00',note:''}});
+ assert.deepEqual(parsePunch('オンコール 往診 1:10-2:30'),{oncall:{kind:'DISPATCH',start:'01:10',end:'02:30',note:''}});
+ assert.deepEqual(parsePunch('オンコール TEL 22:30-22:40'),{oncall:{kind:'CALL',start:'22:30',end:'22:40',note:''}});
+ assert.deepEqual(parsePunch('オンコール 出動 １８：００～１８：４０'),{oncall:{kind:'DISPATCH',start:'18:00',end:'18:40',note:''}});
+ assert.deepEqual(parsePunch('オンコール 出動 23:00-23:40 家族から電話あり'),{oncall:{kind:'DISPATCH',start:'23:00',end:'23:40',note:'家族から電話あり'}});
+ assert.equal((parsePunch('オンコール 電話対応 22:00-22:10 訪問看護から相談') as any).oncall.kind,'CALL');
+ assert.match((parsePunch('オンコール 18:00-18:05') as {ignored:string}).ignored,/電話対応か出動か/);
+ assert.match((parsePunch('オンコール 電話のあと出動 18:00-19:00') as {ignored:string}).ignored,/電話対応か出動か/);
  const at=(o:string,posted:string)=>{const t=oncallTimes(parsePunch(o)&&(parsePunch(o) as any).oncall,jstDate(posted.slice(0,10),posted.slice(11)));return [t.start.toISOString(),t.end.toISOString()];};
  assert.deepEqual(at('オンコール 電話 22:30〜22:45','2026-11-02 23:00'),[jstDate('2026-11-02','22:30').toISOString(),jstDate('2026-11-02','22:45').toISOString()]);
  assert.deepEqual(at('オンコール 電話 23:30〜0:05','2026-11-03 00:10'),[jstDate('2026-11-02','23:30').toISOString(),jstDate('2026-11-03','00:05').toISOString()]);
@@ -168,6 +183,8 @@ test('on-call posts in Slack become on-call responses with a reaction',async()=>
   await f.tick();
   const start=new Date(Date.now()-40*60000),m=dateKey(start).slice(0,7),entries=(await f.call(n,`attendance?month=${m}`)).data.oncall;
   assert.equal(entries.length,1);assert.equal(entries[0].kind,'CALL');assert.equal(entries[0].source,'slack');assert.equal(timeKey(entries[0].start),from);assert.equal(timeKey(entries[0].end),to);
-  assert.deepEqual(slack.state.calls.map(c=>c.method),['reactions.add','chat.postMessage']);assert.match(slack.state.calls[1].body.text,/時刻の範囲/);
+  assert.deepEqual(slack.state.calls.map(c=>c.method),['reactions.add','chat.postMessage','chat.postMessage']);
+  assert.match(slack.state.calls[1].body.text,new RegExp(`^オンコール（電話対応）を記録しました（\\d+/\\d+ ${from}〜${to}・20分）`));
+  assert.match(slack.state.calls[2].body.text,/時刻の範囲/);assert.match(slack.state.calls[2].body.text,/書き方：/);
  }finally{slack.restore();}
 });
