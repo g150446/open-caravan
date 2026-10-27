@@ -34,10 +34,10 @@ export function punchState(punches:Punch[]):'OFF'|'WORKING'|'BREAK'|'DONE'{
 export function allowedNext(punches:Punch[]):PunchKind[]{
  return {OFF:['IN'],WORKING:['BREAK_START','OUT'],BREAK:['BREAK_END'],DONE:['IN']}[punchState(punches)] as PunchKind[];
 }
-export interface DayResult {day:string;start:string|null;end:string|null;breakMinutes:number;work:number;night:number;holiday:number;overtime:number;scheduled:number;shift:Shift|null;punches:Punch[];warnings:string[];}
-interface DayInput {day:string;punches:Punch[];shift:Shift|null;isLegalHoliday:(day:string)=>boolean;today:string;}
+export interface DayResult {day:string;start:string|null;end:string|null;breakMinutes:number;work:number;night:number;holiday:number;overtime:number;scheduled:number;shift:Shift|null;punches:Punch[];warnings:string[];autoBreak:boolean;waived:boolean;}
+interface DayInput {day:string;punches:Punch[];shift:Shift|null;isLegalHoliday:(day:string)=>boolean;today:string;autoBreakMinutes?:number;waived?:boolean;}
 // 1日分の集計（時間外は月の集計で入れる）。
-export function dayRecord({day,punches,shift,isLegalHoliday,today}:DayInput):DayResult{
+export function dayRecord({day,punches,shift,isLegalHoliday,today,autoBreakMinutes=0,waived=false}:DayInput):DayResult{
  const valid=punches.filter(p=>!p.voidedAt).sort((a,b)=>a.at.localeCompare(b.at)),warnings:string[]=[];
  const intervals:[string,string][]=[];let open:string|null=null,broken=false,onBreak=false;
  for(const p of valid){
@@ -49,20 +49,26 @@ export function dayRecord({day,punches,shift,isLegalHoliday,today}:DayInput):Day
  const start=valid.find(p=>p.kind==='IN')?.at??null,end=[...valid].reverse().find(p=>p.kind==='OUT')?.at??null;
  const ms=intervals.map(([a,b])=>[Date.parse(a),Date.parse(b)] as [number,number]);
  const sum=(f:(i:[number,number])=>number)=>Math.round(ms.reduce((n,i)=>n+f(i),0)/60000);
- const work=sum(i=>i[1]-i[0]);
+ const worked=sum(i=>i[1]-i[0]),spanMinutes=start&&end&&end>start?Math.round(span(start,end)):0;
+ // 休憩の打刻がない平日の1日勤務（6時間超）は、勤務予定の休憩（なければ基本設定の分）を取ったものとして差し引く。
+ // 平日は、勤務予定が「勤務」の日か、予定がない月〜金。本人が「休憩を取れなかった」と申告した日は差し引かない。
+ const weekday=shift?shift.kind==='WORK':![0,6].includes(new Date(day+'T00:00:00Z').getUTCDay());
+ const autoMinutes=shift?.kind==='WORK'?shift.breakMinutes:autoBreakMinutes;
+ const autoBreak=autoMinutes>0&&!waived&&weekday&&!isLegalHoliday(day)&&!broken&&!open&&!onBreak&&intervals.length===1&&valid.every(p=>p.kind==='IN'||p.kind==='OUT')&&spanMinutes>360;
+ const work=autoBreak?Math.max(0,worked-autoMinutes):worked;
  const night=sum(i=>[-1,0,1].reduce((n,k)=>{const d=addDays(day,k);return n+overlap(i,[jstDate(d,'22:00').getTime(),jstDate(addDays(d,1),'05:00').getTime()]);},0));
  // 法定休日の労働は暦日（0時〜24時）で数える。前日からの勤務が法定休日にかかる分も含める。
  const holiday=sum(i=>[0,1].reduce((n,k)=>{const d=addDays(day,k);return isLegalHoliday(d)?n+overlap(i,[jstDate(d).getTime(),jstDate(addDays(d,1)).getTime()]):n;},0));
- const breakMinutes=start&&end&&end>start?Math.max(0,Math.round(span(start,end))-work):0;
- if(end&&!open&&!onBreak){if(work>480&&breakMinutes<60)warnings.push('休憩が60分未満です（8時間超）');else if(work>360&&breakMinutes<45)warnings.push('休憩が45分未満です（6時間超）');}
+ const breakMinutes=spanMinutes?Math.max(0,spanMinutes-work):0;
+ if(end&&!open&&!onBreak&&!autoBreak){if(work>480&&breakMinutes<60)warnings.push('休憩が60分未満です（8時間超）');else if(work>360&&breakMinutes<45)warnings.push('休憩が45分未満です（6時間超）');}
  const scheduled=scheduledMinutes(shift);
  if(shift?.kind==='WORK'&&shift.start&&shift.end&&start){
   const late=Math.round(span(jstDate(day,shift.start).toISOString(),start));let planEnd=jstDate(day,shift.end);if(minutesOf(shift.end)<=minutesOf(shift.start))planEnd=jstDate(addDays(day,1),shift.end);
   if(Math.abs(late)>=30||(end&&Math.abs(span(planEnd.toISOString(),end))>=30))warnings.push('予定と30分以上ずれています');
  }else if(work&&shift&&shift.kind!=='WORK')warnings.push(`予定は${shiftLabels[shift.kind]}です`);
- return {day,start,end,breakMinutes,work,night,holiday,overtime:0,scheduled,shift,punches,warnings};
+ return {day,start,end,breakMinutes,work,night,holiday,overtime:0,scheduled,shift,punches,warnings,autoBreak,waived};
 }
-export interface MonthOptions {month:string;system:WorkSystem;confirmed:boolean;weekStart:number;legalHolidayWeekday:number;today:string;punches:Punch[];shifts:Shift[];}
+export interface MonthOptions {month:string;system:WorkSystem;confirmed:boolean;weekStart:number;legalHolidayWeekday:number;today:string;punches:Punch[];shifts:Shift[];autoBreakMinutes?:number;waivers?:string[];}
 export interface MonthResult {days:DayResult[];variable:boolean;legalTotal:number;totals:{workDays:number;work:number;overtime:number;night:number;holiday:number;paidLeave:number;scheduled:number};}
 // 1か月の集計。通常は「1日8時間・週40時間」、変形制（確定済みの月）は「予定・週・月の法定総枠」を超えた分を時間外にする。
 // 通常の週は月をまたぐので、月初の週は前月の打刻も読む（punches は weekStartOf(月初) から渡す）。
@@ -70,7 +76,7 @@ export function monthRecord(o:MonthOptions):MonthResult{
  const first=o.month+'-01',last=monthEnd(o.month),from=weekStartOf(first,o.weekStart),variable=o.system==='monthly_variable'&&o.confirmed;
  const shiftOf=(d:string)=>o.shifts.find(s=>s.day===d)??null;
  const isLegalHoliday=(d:string)=>{const s=shiftOf(d);return s?s.kind==='LEGAL_OFF':new Date(d+'T00:00:00Z').getUTCDay()===o.legalHolidayWeekday;};
- const all:DayResult[]=[];for(let d=variable?first:from;d<=last;d=addDays(d,1))all.push(dayRecord({day:d,punches:o.punches.filter(p=>p.workDate===d),shift:shiftOf(d),isLegalHoliday,today:o.today}));
+ const all:DayResult[]=[];for(let d=variable?first:from;d<=last;d=addDays(d,1))all.push(dayRecord({day:d,punches:o.punches.filter(p=>p.workDate===d),shift:shiftOf(d),isLegalHoliday,today:o.today,autoBreakMinutes:o.autoBreakMinutes,waived:o.waivers?.includes(d)}));
  // 週・月の上限を超えた分は、超えた日に付ける。日ごとの時間外と法定休日の労働は週・月の計算に入れない。
  let week:string|null=null,weekRegular=0,weekLimit=WEEK,monthRegular=0;const total=legalTotal(variable?all.length:0);
  for(const r of all){

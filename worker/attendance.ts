@@ -71,21 +71,34 @@ export async function attendance(req:Request,env:Env,actor:Actor,method:string,i
   const staffId=params.get('staffId')||actor.id,month=monthSchema.parse(params.get('month'));assert(admin||staffId===actor.id,403,'自分の勤怠だけを閲覧できます。');
   assert(await get(env.DB,staffId,'staff'),404,'スタッフが見つかりません。');
   const settings=await getSettings(env.DB),from=weekStartOf(month+'-01',settings.weekStartWeekday),to=monthEnd(month);
-  const [punches,requests,shifts,confirmed,pending]=await Promise.all([
+  const [punches,requests,shifts,confirmed,pending,waivers]=await Promise.all([
    env.DB.prepare('SELECT * FROM punches WHERE staff_id=? AND work_date>=? AND work_date<=? ORDER BY at').bind(staffId,from,to).all<PunchRow>(),
    env.DB.prepare('SELECT * FROM punch_requests WHERE staff_id=? AND work_date>=? AND work_date<=? ORDER BY created_at').bind(staffId,from,to).all<RequestRow>(),
    env.DB.prepare('SELECT * FROM shifts WHERE staff_id=? AND day>=? AND day<=?').bind(staffId,from,to).all<ShiftRow>(),
    env.DB.prepare('SELECT * FROM shift_months WHERE month=?').bind(month).first<{confirmed_at:string;confirmed_by:string}>(),
-   admin?env.DB.prepare("SELECT * FROM punch_requests WHERE status='PENDING' ORDER BY created_at").all<RequestRow>():Promise.resolve({results:[] as RequestRow[]})]);
+   admin?env.DB.prepare("SELECT * FROM punch_requests WHERE status='PENDING' ORDER BY created_at").all<RequestRow>():Promise.resolve({results:[] as RequestRow[]}),
+   env.DB.prepare('SELECT * FROM break_waivers WHERE staff_id=? AND work_date>=? AND work_date<=? ORDER BY work_date').bind(staffId,from,to).all<{work_date:string;reason:string;created_by:string;created_at:string;revoked_at:string|null;revoked_by:string|null}>()]);
   // Slack の投稿で打刻にならなかったもの（この7日に取り込んだ分）。管理者が本人に確かめるために出す。
   const slackRejected=admin?(await env.DB.prepare("SELECT id,slack_user,staff_id,text,message,posted_at FROM slack_events WHERE status='REJECTED' AND created_at>=? ORDER BY posted_at DESC LIMIT 100").bind(new Date(Date.now()-7*86400000).toISOString()).all<{id:string;slack_user:string;staff_id:string|null;text:string;message:string;posted_at:string}>()).results.map(r=>({id:r.id,slackUser:r.slack_user,staffId:r.staff_id,text:r.text,message:r.message,postedAt:r.posted_at})):[];
-  return {punches:punches.results.map(punchOf),requests:requests.results.map(requestOf),shifts:shifts.results.map(shiftOf),confirmed:confirmed?{at:confirmed.confirmed_at,by:confirmed.confirmed_by}:null,pending:pending.results.map(requestOf),slackRejected};
+  return {punches:punches.results.map(punchOf),requests:requests.results.map(requestOf),shifts:shifts.results.map(shiftOf),confirmed:confirmed?{at:confirmed.confirmed_at,by:confirmed.confirmed_by}:null,pending:pending.results.map(requestOf),slackRejected,waivers:waivers.results.map(w=>({workDate:w.work_date,reason:w.reason,createdBy:w.created_by,createdAt:w.created_at,revokedAt:w.revoked_at,revokedBy:w.revoked_by}))};
  }
  assert(method==='POST'||method==='PATCH',405,'操作できません。');assert(body,400,'送信データが不正です。');
  if(id==='punch'&&!operation&&method==='POST'){
   // 時刻はサーバーの時計で決める。画面から時刻は受け取らない。
   await selfPunch(env,actor.id,punchKindSchema.parse(body.kind),new Date(),await deviceOf(req as CertificateRequest,env));
   return {ok:true,...await status(env,actor.id)};
+ }
+ if(id==='break-waiver'&&method==='POST'){
+  // 「休憩を取れなかった」の申告。本人（管理者は代わりに）が理由を付けて出し、その日は休憩を自動で差し引かない。取り消しは管理者だけで、行は残す。
+  const staffId=z.string().max(100).optional().parse(body.staffId)??actor.id,workDate=keySchema.parse(body.workDate);
+  assert(admin||staffId===actor.id,403,'自分の勤怠だけを申告できます。');assert(await get(env.DB,staffId,'staff'),404,'スタッフが見つかりません。');
+  if(operation==='revoke'){assert(admin,403,'管理者のみ操作できます。');
+   await guarded(env,[{changed:env.DB.prepare('UPDATE break_waivers SET revoked_at=?,revoked_by=? WHERE staff_id=? AND work_date=? AND revoked_at IS NULL').bind(now,actor.id,staffId,workDate)},audit(env,actor.id,'BREAK_WAIVER_REVOKED',staffId+':'+workDate)],'取り消す申告がありません。');return {ok:true};}
+  assert(!operation,404,'APIがありません。');assert(workDate<=dateKey(new Date()),400,'これからの日は申告できません。');
+  const reason=reasonSchema.parse(body.reason);
+  // 取り消した申告がある日は、出し直しで上書きする。有効な申告がある日は二重にしない。
+  await guarded(env,[{changed:env.DB.prepare('INSERT INTO break_waivers(staff_id,work_date,reason,created_by,created_at) VALUES(?,?,?,?,?) ON CONFLICT(staff_id,work_date) DO UPDATE SET reason=excluded.reason,created_by=excluded.created_by,created_at=excluded.created_at,revoked_at=NULL,revoked_by=NULL WHERE break_waivers.revoked_at IS NOT NULL').bind(staffId,workDate,reason,actor.id,now)},audit(env,actor.id,'BREAK_WAIVED',staffId+':'+workDate)],'この日はすでに申告されています。');
+  return {ok:true};
  }
  if(id==='requests'&&!operation&&method==='POST'){
   // 打ち忘れなどの申請は本人だけが出す。承認されるまで勤怠には入らない。

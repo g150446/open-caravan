@@ -9,7 +9,7 @@ let n=0;
 const punch=(workDate:string,kind:PunchKind,local:string,extra:Partial<Punch>={}):Punch=>({id:'p'+(++n),staffId:'s',workDate,kind,at:jstDate(local.slice(0,10),local.slice(11)).toISOString(),source:'punch',device:null,reason:null,createdBy:'s',createdAt:'',voidedAt:null,voidedBy:null,voidReason:null,...extra});
 const day=(d:string,from:string,to:string,breakFrom?:string,breakTo?:string)=>[punch(d,'IN',`${d} ${from}`),...(breakFrom?[punch(d,'BREAK_START',`${d} ${breakFrom}`),punch(d,'BREAK_END',`${d} ${breakTo}`)]:[]),punch(d,'OUT',`${to.length>5?to:d+' '+to}`)];
 const shift=(d:string,kind:Shift['kind'],start:string|null=null,end:string|null=null,breakMinutes=0):Shift=>({staffId:'s',day:d,kind,pattern:null,start,end,breakMinutes,note:'',version:1});
-const month=(m:string,punches:Punch[],o:{shifts?:Shift[];system?:'standard'|'monthly_variable';confirmed?:boolean}={})=>monthRecord({month:m,system:o.system??'standard',confirmed:o.confirmed??false,weekStart:0,legalHolidayWeekday:0,today:'2099-01-01',punches,shifts:o.shifts??[]});
+const month=(m:string,punches:Punch[],o:{shifts?:Shift[];system?:'standard'|'monthly_variable';confirmed?:boolean;autoBreakMinutes?:number;waivers?:string[]}={})=>monthRecord({month:m,system:o.system??'standard',confirmed:o.confirmed??false,weekStart:0,legalHolidayWeekday:0,today:'2099-01-01',punches,shifts:o.shifts??[],autoBreakMinutes:o.autoBreakMinutes,waivers:o.waivers});
 const of=(r:ReturnType<typeof month>,d:string)=>r.days.find(x=>x.day===d)!;
 
 test('daily work over 8 hours is overtime and the break is the gap between punches',()=>{
@@ -56,6 +56,25 @@ test('voided punches are ignored and a missing clock-out is flagged',()=>{
  assert(of(month('2026-06',[punch('2026-06-08','IN','2026-06-08 09:00')]),'2026-06-08').warnings.includes('退勤の打刻がありません'));
 });
 
+test('weekday full days without break punches get the automatic break',()=>{
+ const auto={autoBreakMinutes:60};
+ // 平日 8:00〜17:00、休憩の打刻なし → 労働 8:00、休憩 1:00（自動）、時間外なし、警告なし。
+ const r=of(month('2026-06',day('2026-06-01','08:00','17:00'),auto),'2026-06-01');
+ assert.equal(r.work,480);assert.equal(r.breakMinutes,60);assert(r.autoBreak);assert.equal(r.overtime,0);assert.deepEqual(r.warnings,[]);
+ // 休憩の打刻がある日は今までどおり。
+ const punched=of(month('2026-06',day('2026-06-01','08:00','17:00','12:00','12:30'),auto),'2026-06-01');assert.equal(punched.work,510);assert(!punched.autoBreak);
+ // 土日、勤務予定が休日・有休、6時間以下の日は差し引かない。
+ assert(!of(month('2026-06',day('2026-06-06','08:00','17:00'),auto),'2026-06-06').autoBreak);
+ assert(!of(month('2026-06',day('2026-06-02','08:00','17:00'),{...auto,shifts:[shift('2026-06-02','OFF')]}),'2026-06-02').autoBreak);
+ assert(!of(month('2026-06',day('2026-06-03','09:00','15:00'),auto),'2026-06-03').autoBreak);
+ // 勤務予定の休憩が45分ならその値。土曜でも勤務予定が「勤務」なら差し引く。
+ assert.equal(of(month('2026-06',day('2026-06-04','08:00','17:00'),{...auto,shifts:[shift('2026-06-04','WORK','08:00','17:00',45)]}),'2026-06-04').work,495);
+ assert(of(month('2026-06',day('2026-06-06','08:00','17:00'),{...auto,shifts:[shift('2026-06-06','WORK','08:00','17:00',60)]}),'2026-06-06').autoBreak);
+ // 「休憩を取れなかった」と申告した日は差し引かず、警告を出す。設定 0 なら差し引かない。
+ const waived=of(month('2026-06',day('2026-06-05','08:00','17:00'),{...auto,waivers:['2026-06-05']}),'2026-06-05');
+ assert.equal(waived.work,540);assert(waived.waived);assert(waived.warnings.some(w=>w.includes('60分未満')));
+ assert(!of(month('2026-06',day('2026-06-01','08:00','17:00'),{autoBreakMinutes:0}),'2026-06-01').autoBreak);
+});
 function fixture(){
  const db=new SQLite();for(const file of readdirSync('migrations').filter(f=>f.endsWith('.sql')).sort())db.raw.exec(readFileSync('migrations/'+file,'utf8'));
  const env:Env={MTLS_MODE:'local',DB:db,APP_ORIGIN:'http://127.0.0.1:3000',AUTH_PEPPER:'test-secret-pepper-32-bytes-long-value',SETUP_TOKEN:'test-setup-token-32-bytes-long-value',SETUP_EXPIRES:String(Date.now()+86400000)};
@@ -132,4 +151,18 @@ test('saving the office settings keeps the shift patterns',async()=>{
  assert.equal((await f.call(admin,'settings','PATCH',{officeName:'本院',officeAddress:'',marginMinutes:10,officeLocation:'',detourFactor:1.4,speedKmh:30,version:1})).status,200);
  const s=(await f.call(admin,'bootstrap')).data.data.settings;assert.deepEqual(s.shiftPatterns,patterns);assert.equal(s.legalHolidayWeekday,6);assert.equal(s.officeName,'本院');
  assert.equal((await f.call(admin,'settings','PATCH',{shiftPatterns:[...patterns,patterns[0]],version:2})).status,400);
+});
+test('staff declare days they could not take a break; admins can revoke, and the record stays',async()=>{
+ const f=fixture(),admin=await f.setup(),nurse=await nurseOf(f,admin),yesterday=addDays(dateKey(new Date()),-1);
+ assert.equal((await f.call(nurse,'attendance/break-waiver','POST',{workDate:yesterday,reason:' '})).status,400);
+ assert.equal((await f.call(nurse,'attendance/break-waiver','POST',{staffId:admin.id,workDate:yesterday,reason:'代理'})).status,403);
+ assert.equal((await f.call(nurse,'attendance/break-waiver','POST',{workDate:addDays(dateKey(new Date()),1),reason:'未来'})).status,400);
+ assert.equal((await f.call(nurse,'attendance/break-waiver','POST',{workDate:yesterday,reason:'訪問が押して取れなかった'})).status,200);
+ assert.equal((await f.call(nurse,'attendance/break-waiver','POST',{workDate:yesterday,reason:'二重'})).status,409);
+ assert.equal((await f.call(nurse,'attendance/break-waiver/revoke','POST',{staffId:nurse.id,workDate:yesterday})).status,403);
+ assert.equal((await f.call(admin,'attendance/break-waiver/revoke','POST',{staffId:nurse.id,workDate:yesterday})).status,200);
+ let w=(await f.call(nurse,`attendance?month=${yesterday.slice(0,7)}`)).data.waivers;assert.equal(w.length,1);assert(w[0].revokedAt);
+ assert.equal((await f.call(nurse,'attendance/break-waiver','POST',{workDate:yesterday,reason:'出し直し'})).status,200);
+ w=(await f.call(nurse,`attendance?month=${yesterday.slice(0,7)}`)).data.waivers;assert.equal(w[0].revokedAt,null);assert.equal(w[0].reason,'出し直し');
+ const actions=(await f.call(admin,'audit')).data.map((a:any)=>a.action);assert(actions.includes('BREAK_WAIVED')&&actions.includes('BREAK_WAIVER_REVOKED'));
 });
