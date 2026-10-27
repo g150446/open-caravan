@@ -63,3 +63,4 @@ button.danger-fill{background:#c4442f;border-color:#c4442f}
 .shift-table th,.shift-table td{padding:6px 5px}.shift-table .shift-cell{min-width:32px}
 .auto-break{color:#71878a}.waiver-box{margin-top:6px}.waiver-box p{font-size:12px;margin:4px 0}
 .oncall-mark{display:inline-block!important;margin-left:2px;padding:0 3px;border-radius:3px;background:#6b4fa3;color:#fff;font-size:10px;line-height:14px;vertical-align:middle}.duty-badge{display:inline-block;margin-left:6px;padding:0 5px;border-radius:3px;background:#efe9f8;color:#5a3f8f;font-size:11px;font-weight:600}.oncall-box{margin-top:6px}.oncall-box p{font-size:12px;margin:4px 0}.oncall-box .punch-entry span{align-self:center}
+.text-button.danger{color:#b76350}

@@ -5,7 +5,7 @@ export type ShiftKind='WORK'|'OFF'|'LEGAL_OFF'|'PAID_LEAVE';
 export type WorkSystem='standard'|'monthly_variable';
 export interface Punch {id:string;staffId:string;workDate:string;kind:PunchKind;at:string;source:'punch'|'request'|'correction';device:string|null;reason:string|null;createdBy:string;createdAt:string;voidedAt:string|null;voidedBy:string|null;voidReason:string|null;}
 export interface Shift {staffId:string;day:string;kind:ShiftKind;pattern:string|null;start:string|null;end:string|null;breakMinutes:number;note:string;version:number;}
-export interface PunchRequest {id:string;staffId:string;workDate:string;kind:PunchKind;at:string;reason:string;status:'PENDING'|'APPROVED'|'REJECTED';createdAt:string;decidedBy:string|null;decidedAt:string|null;decisionNote:string|null;replaces?:{id:string;kind:PunchKind;at:string}|null;}
+export interface PunchRequest {id:string;staffId:string;workDate:string;kind:PunchKind;at:string;reason:string;status:'PENDING'|'APPROVED'|'REJECTED';createdAt:string;decidedBy:string|null;decidedAt:string|null;decisionNote:string|null;replaces?:{id:string;kind:PunchKind;at:string}|null;remove?:boolean;}
 export type OncallKind='CALL'|'DISPATCH';
 export interface OncallEntry {id:string;staffId:string;workDate:string;kind:OncallKind;start:string;end:string;note:string;source:'manual'|'slack';createdBy:string;createdAt:string;voidedAt:string|null;voidedBy:string|null;voidReason:string|null;}
 export interface ShiftPattern {code:string;label:string;start:string;end:string;breakMinutes:number;}

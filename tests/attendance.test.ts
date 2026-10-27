@@ -238,3 +238,14 @@ test('staff request to fix a punch; approval voids the original and keeps it',as
  assert.equal((await f.call(admin,'attendance/requests/'+r2.data.id,'PATCH',{approve:true})).status,409);
  assert.equal((await f.call(nurse,`attendance?month=${y.slice(0,7)}`)).data.requests.find((q:any)=>q.id===r2.data.id).status,'PENDING');
 });
+test('staff request to delete a punch; approval voids it without adding one',async()=>{
+ const f=fixture(),admin=await f.setup(),nurse=await nurseOf(f,admin),y=addDays(dateKey(new Date()),-1);
+ assert.equal((await f.call(admin,'attendance/corrections','POST',{staffId:nurse.id,workDate:y,add:[{kind:'IN',date:y,time:'08:00'},{kind:'OUT',date:y,time:'12:00'},{kind:'OUT',date:y,time:'17:00'}],void:[],reason:'記録'})).status,200);
+ const punches=(await f.call(nurse,`attendance?month=${y.slice(0,7)}`)).data.punches.filter((p:any)=>p.workDate===y),dup=punches.find((p:any)=>p.at===jstDate(y,'12:00').toISOString());
+ assert.equal((await f.call(nurse,'attendance/requests','POST',{workDate:y,kind:'IN',date:y,time:'08:00',reason:'押し間違い',remove:true})).status,400);
+ const r=await f.call(nurse,'attendance/requests','POST',{workDate:y,kind:'IN',date:y,time:'08:00',reason:'押し間違いの退勤',replaces:dup.id,remove:true});assert.equal(r.status,200);
+ const pending=(await f.call(admin,`attendance?month=${y.slice(0,7)}`)).data.pending[0];assert(pending.remove);assert.equal(pending.kind,'OUT');assert.equal(pending.at,dup.at);
+ assert.equal((await f.call(admin,'attendance/requests/'+r.data.id,'PATCH',{approve:true})).status,200);
+ const after=(await f.call(nurse,`attendance?month=${y.slice(0,7)}`)).data.punches.filter((p:any)=>p.workDate===y);
+ assert.equal(after.length,3);assert(after.find((p:any)=>p.id===dup.id).voidedAt);assert.equal(after.filter((p:any)=>!p.voidedAt).length,2);
+});

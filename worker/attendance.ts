@@ -12,15 +12,15 @@ import {get} from './store';
 import {getSettings} from './routes';
 
 type PunchRow={id:string;staff_id:string;work_date:string;kind:Punch['kind'];at:string;source:Punch['source'];device:string|null;reason:string|null;created_by:string;created_at:string;voided_at:string|null;voided_by:string|null;void_reason:string|null};
-type RequestRow={replaces_id?:string|null;replaces_kind?:PunchKind|null;replaces_at?:string|null;id:string;staff_id:string;work_date:string;kind:Punch['kind'];at:string;reason:string;status:PunchRequest['status'];created_at:string;decided_by:string|null;decided_at:string|null;decision_note:string|null};
+type RequestRow={remove?:number;replaces_id?:string|null;replaces_kind?:PunchKind|null;replaces_at?:string|null;id:string;staff_id:string;work_date:string;kind:Punch['kind'];at:string;reason:string;status:PunchRequest['status'];created_at:string;decided_by:string|null;decided_at:string|null;decision_note:string|null};
 type OncallRow={id:string;staff_id:string;work_date:string;kind:OncallKind;start_at:string;end_at:string;note:string;source:OncallEntry['source'];created_by:string;created_at:string;voided_at:string|null;voided_by:string|null;void_reason:string|null};
 type ShiftRow={staff_id:string;day:string;kind:Shift['kind'];pattern:string|null;start:string|null;end:string|null;break_minutes:number;note:string;version:number};
 const punchOf=(r:PunchRow):Punch=>({id:r.id,staffId:r.staff_id,workDate:r.work_date,kind:r.kind,at:r.at,source:r.source,device:r.device,reason:r.reason,createdBy:r.created_by,createdAt:r.created_at,voidedAt:r.voided_at,voidedBy:r.voided_by,voidReason:r.void_reason});
-const requestOf=(r:RequestRow):PunchRequest=>({id:r.id,staffId:r.staff_id,workDate:r.work_date,kind:r.kind,at:r.at,reason:r.reason,status:r.status,createdAt:r.created_at,decidedBy:r.decided_by,decidedAt:r.decided_at,decisionNote:r.decision_note,replaces:r.replaces_id?{id:r.replaces_id,kind:r.replaces_kind!,at:r.replaces_at!}:null});
+const requestOf=(r:RequestRow):PunchRequest=>({id:r.id,staffId:r.staff_id,workDate:r.work_date,kind:r.kind,at:r.at,reason:r.reason,status:r.status,createdAt:r.created_at,decidedBy:r.decided_by,decidedAt:r.decided_at,decisionNote:r.decision_note,replaces:r.replaces_id?{id:r.replaces_id,kind:r.replaces_kind!,at:r.replaces_at!}:null,remove:!!r.remove});
 const oncallOf=(r:OncallRow):OncallEntry=>({id:r.id,staffId:r.staff_id,workDate:r.work_date,kind:r.kind,start:r.start_at,end:r.end_at,note:r.note,source:r.source,createdBy:r.created_by,createdAt:r.created_at,voidedAt:r.voided_at,voidedBy:r.voided_by,voidReason:r.void_reason});
 const shiftOf=(r:ShiftRow):Shift=>({staffId:r.staff_id,day:r.day,kind:r.kind,pattern:r.pattern,start:r.start,end:r.end,breakMinutes:r.break_minutes,note:r.note,version:r.version});
 // 申請に、直す打刻（あれば）を付けて読む。
-const requestSelect='SELECT r.*,x.punch_id AS replaces_id,p.kind AS replaces_kind,p.at AS replaces_at FROM punch_requests r LEFT JOIN punch_request_replaces x ON x.request_id=r.id LEFT JOIN punches p ON p.id=x.punch_id';
+const requestSelect='SELECT r.*,x.punch_id AS replaces_id,p.kind AS replaces_kind,p.at AS replaces_at,d.request_id IS NOT NULL AS remove FROM punch_requests r LEFT JOIN punch_request_replaces x ON x.request_id=r.id LEFT JOIN punch_request_deletes d ON d.request_id=r.id LEFT JOIN punches p ON p.id=x.punch_id';
 const insertPunch=(env:Env,p:Omit<Punch,'voidedAt'|'voidedBy'|'voidReason'>)=>env.DB.prepare('INSERT INTO punches(id,staff_id,work_date,kind,at,source,device,reason,created_by,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)').bind(p.id,p.staffId,p.workDate,p.kind,p.at,p.source,p.device,p.reason,p.createdBy,p.createdAt);
 // 直前の文が1行も変えなければ、CHECK 制約で batch 全体を取り消す（store.ts の commit と同じ仕組み）。
 async function guarded(env:Env,steps:(Statement|{changed:Statement})[],message:string){
@@ -137,14 +137,17 @@ export async function attendance(req:Request,env:Env,actor:Actor,method:string,i
  if(id==='requests'&&!operation&&method==='POST'){
   // 打ち忘れなどの申請は本人だけが出す。承認されるまで勤怠には入らない。
   const workDate=keySchema.parse(body.workDate),entry=entrySchema.parse(body),reason=reasonSchema.parse(body.reason);checkEntry(workDate,entry);checkDeadline(admin,workDate);
-  const time=at(entry.date,entry.time);assert(time<=now,400,'これからの時刻は申請できません。');
-  // replaces があれば、その打刻を直す申請。本人の同じ勤務日の、取り消されていない打刻に限る。
-  const replaces=z.string().max(100).optional().parse(body.replaces||undefined),r={id:crypto.randomUUID()};
+  let time=at(entry.date,entry.time),kind=entry.kind;assert(time<=now,400,'これからの時刻は申請できません。');
+  // replaces があれば、その打刻を直す申請（remove なら削除の申請）。本人の同じ勤務日の、取り消されていない打刻に限る。
+  const replaces=z.string().max(100).optional().parse(body.replaces||undefined),remove=z.boolean().default(false).parse(body.remove),r={id:crypto.randomUUID()};
+  assert(!remove||replaces,400,'削除する打刻を選んでください。');
   if(replaces){
-   assert(await env.DB.prepare('SELECT 1 AS ok FROM punches WHERE id=? AND staff_id=? AND work_date=? AND voided_at IS NULL').bind(replaces,actor.id,workDate).first(),400,'直す打刻が見つかりません。');
+   const p=await env.DB.prepare('SELECT * FROM punches WHERE id=? AND staff_id=? AND work_date=? AND voided_at IS NULL').bind(replaces,actor.id,workDate).first<PunchRow>();assert(p,400,remove?'削除する打刻が見つかりません。':'直す打刻が見つかりません。');
+   // 削除の申請は、元の打刻の種類と時刻を記録しておく（承認しても新しい打刻は足さない）。
+   if(remove){kind=p.kind;time=p.at;}
    assert(!await env.DB.prepare("SELECT 1 AS ok FROM punch_request_replaces x JOIN punch_requests r ON r.id=x.request_id WHERE x.punch_id=? AND r.status='PENDING'").bind(replaces).first(),409,'この打刻には承認待ちの申請があります。');
   }
-  await env.DB.batch([env.DB.prepare("INSERT INTO punch_requests(id,staff_id,work_date,kind,at,reason,status,created_at) VALUES(?,?,?,?,?,?,'PENDING',?)").bind(r.id,actor.id,workDate,entry.kind,time,reason,now),...(replaces?[env.DB.prepare('INSERT INTO punch_request_replaces(request_id,punch_id) VALUES(?,?)').bind(r.id,replaces)]:[]),audit(env,actor.id,'PUNCH_REQUESTED',r.id)]);
+  await env.DB.batch([env.DB.prepare("INSERT INTO punch_requests(id,staff_id,work_date,kind,at,reason,status,created_at) VALUES(?,?,?,?,?,?,'PENDING',?)").bind(r.id,actor.id,workDate,kind,time,reason,now),...(replaces?[env.DB.prepare('INSERT INTO punch_request_replaces(request_id,punch_id) VALUES(?,?)').bind(r.id,replaces)]:[]),...(remove?[env.DB.prepare('INSERT INTO punch_request_deletes(request_id) VALUES(?)').bind(r.id)]:[]),audit(env,actor.id,'PUNCH_REQUESTED',r.id)]);
   return {ok:true,id:r.id};
  }
  if(id==='requests'&&operation&&method==='PATCH'){
@@ -154,7 +157,7 @@ export async function attendance(req:Request,env:Env,actor:Actor,method:string,i
   const steps:(Statement|{changed:Statement})[]=[{changed:env.DB.prepare("UPDATE punch_requests SET status=?,decided_by=?,decided_at=?,decision_note=? WHERE id=? AND status='PENDING'").bind(approve?'APPROVED':'REJECTED',actor.id,now,note,r.id)}];
   // 打刻を直す申請は、元の打刻を取り消し済みにしてから足す。元の打刻がすでに変わっていれば何も反映しない。
   if(approve&&r.replaces_id)steps.push({changed:env.DB.prepare('UPDATE punches SET voided_at=?,voided_by=?,void_reason=? WHERE id=? AND voided_at IS NULL').bind(now,actor.id,r.reason,r.replaces_id)});
-  if(approve)steps.push(insertPunch(env,{id:crypto.randomUUID(),staffId:r.staff_id,workDate:r.work_date,kind:r.kind,at:r.at,source:'request',device:null,reason:r.reason+(note?`（承認: ${note}）`:''),createdBy:actor.id,createdAt:now}));
+  if(approve&&!r.remove)steps.push(insertPunch(env,{id:crypto.randomUUID(),staffId:r.staff_id,workDate:r.work_date,kind:r.kind,at:r.at,source:'request',device:null,reason:r.reason+(note?`（承認: ${note}）`:''),createdBy:actor.id,createdAt:now}));
   steps.push(audit(env,actor.id,approve?'PUNCH_REQUEST_APPROVED':'PUNCH_REQUEST_REJECTED',r.id));
   await guarded(env,steps,r.replaces_id?'すでに処理された申請か、直す打刻が変更されています。再読込してください。':'すでに処理された申請です。');return {ok:true};
  }
