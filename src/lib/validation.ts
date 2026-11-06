@@ -7,7 +7,7 @@ export const recurrenceSchema = z.object({kind: z.enum(['weekly','monthly']), in
 export const appointmentSchema = z.object({
   patientId: z.string().nullable(), title: z.string().trim().max(200), date: keySchema,
   startTime: timeSchema, endTime: timeSchema, staffIds: z.array(z.string()).min(1).max(20),
-  memo: z.string().max(30000), recurrence: recurrenceSchema.nullable().optional(), endDate: keySchema.optional(),
+  memo: z.string().max(30000), mark: z.enum(['','初','往','注']).default(''), recurrence: recurrenceSchema.nullable().optional(), endDate: keySchema.optional(),
   version: z.number().int().positive().optional(), scope: z.enum(['one','future']).default('one')
 }).refine(x => x.endTime > x.startTime, '終了時刻は開始時刻より後にしてください').refine(x => x.patientId || x.title, '患者または予定名が必要です').refine(x => !x.recurrence || (x.endDate && x.endDate >= x.date), '繰り返し終了日を指定してください');
 export const patientSchema = z.object({number: z.string().trim().min(1).max(40), name: z.string().trim().min(1).max(100), kana: z.string().max(100).default(''), address: z.string().max(500), movacalUrl: z.string().max(1000).refine(x => { if (!x) return true; try { const u = new URL(x); return u.protocol === 'https:' && !u.username && !u.password && (u.hostname === 'movacal.net' || u.hostname.endsWith('.movacal.net')); } catch {return false;} }, 'モバカルのHTTPS URLを入力してください'), handover: z.string().max(30000).default(''), visitFrequency: z.string().trim().max(40).default(''), facilityId: z.string().nullable(), location: z.string().trim().max(60).default('').refine(x => !x || parseLocation(x) !== null, '地図の位置は「緯度, 経度」の形で日本国内の値を入力してください'), active: z.boolean().default(true), version: z.number().int().positive().optional()});

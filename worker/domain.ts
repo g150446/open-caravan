@@ -9,13 +9,13 @@ export async function references(db:Database,input:{patientId:string|null;staffI
  const staff=await list(db,'staff');assert(new Set(input.staffIds).size===input.staffIds.length&&input.staffIds.every(id=>staff.some(s=>s.id===id&&s.active)),400,'有効な担当者を選んでください。');
 }
 export function makeAppointment(input:ReturnType<typeof appointmentSchema.parse>,day=input.date,seriesId:string|null=null):Doc{
- return {id:crypto.randomUUID(),version:1,patientId:input.patientId,title:input.title,staffIds:input.staffIds,memo:day===input.date?input.memo:'',startsAt:jstDate(day,input.startTime).toISOString(),endsAt:jstDate(day,input.endTime).toISOString(),seriesId,occurrenceDate:seriesId?day:null,exception:false,cancelled:false};
+ return {id:crypto.randomUUID(),version:1,patientId:input.patientId,title:input.title,staffIds:input.staffIds,memo:day===input.date?input.memo:'',mark:day===input.date?input.mark:'',startsAt:jstDate(day,input.startTime).toISOString(),endsAt:jstDate(day,input.endTime).toISOString(),seriesId,occurrenceDate:seriesId?day:null,exception:false,cancelled:false};
 }
 export async function create(db:Database,body:unknown):Promise<Entry[]>{
  const input=appointmentSchema.parse(body);await references(db,input);if(!input.recurrence)return [{kind:'appointments',doc:makeAppointment(input)}];
  const dates=occurrences(input.date,input.endDate!,input.recurrence);assert(dates.length,400,'期間内に該当する曜日がありません。');
  const series:Doc={id:crypto.randomUUID(),version:1,startDate:input.date,endDate:input.endDate,rule:input.recurrence};
- return [{kind:'series',doc:series},...dates.map((day,i)=>({kind:'appointments',doc:{...makeAppointment(input,day,series.id),memo:i===0?input.memo:''}}))];
+ return [{kind:'series',doc:series},...dates.map((day,i)=>({kind:'appointments',doc:{...makeAppointment(input,day,series.id),memo:i===0?input.memo:'',mark:i===0?input.mark:''}}))];
 }
 export async function edit(db:Database,current:Doc,body:unknown):Promise<Entry[]>{
  const input=appointmentSchema.parse(body);assert(input.version===current.version,409,'予定が変更されました。再読込してください。');await references(db,input);
@@ -28,7 +28,7 @@ export async function edit(db:Database,current:Doc,body:unknown):Promise<Entry[]
  const newSeries:Doc={id:crypto.randomUUID(),version:1,startDate:input.date,endDate:end,rule};
  const entries:Entry[]=[{kind:'series',doc:{...series,endDate:addDays(cutoff,-1),version:series.version+1}},{kind:'series',doc:newSeries}];
  for(const day of dates){const previous=old.find(a=>a.occurrenceDate===day);if(previous?.exception)continue;
- const a=makeAppointment(input,day,newSeries.id);if(previous){a.id=previous.id;a.version=previous.version+1;a.memo=previous.id===current.id?input.memo:previous.memo;}
+ const a=makeAppointment(input,day,newSeries.id);if(previous){a.id=previous.id;a.version=previous.version+1;a.memo=previous.id===current.id?input.memo:previous.memo;a.mark=previous.id===current.id?input.mark:(previous.mark??'');}
  entries.push({kind:'appointments',doc:a});}
  for(const a of old){if(a.exception){entries.push({kind:'appointments',doc:{...a,version:a.version+1,seriesId:null,occurrenceDate:null}});continue;}if(dates.includes(String(a.occurrenceDate)))continue;
  entries.push({kind:'appointments',doc:{...a,version:a.version+1,...(a.memo&&a.id!==current.id?{seriesId:null,occurrenceDate:null,exception:true}:{cancelled:true})}});}
