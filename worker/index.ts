@@ -3,10 +3,10 @@ import {z} from 'zod';
 import type {Env,Actor,Doc} from './types';
 import {assert,ApiError} from '../src/lib/errors';
 import {appointmentSchema,facilitySchema,keySchema,patientSchema,settingsSchema,staffSchema,timeSchema} from '../src/lib/validation';
-import {addDays,dateKey,jstDate} from '../src/lib/date';
+import {addDays,dateKey,jstDate,timeKey} from '../src/lib/date';
 import {authenticate,origin,login,setup,setupCheck,cookieName,changePassword,temporaryFields,audit} from './auth';
 import {get,list,revision,commit,put,bulkPut,safeStaff,snapshot} from './store';
-import {create,edit,remove} from './domain';
+import {create,edit,references,remove} from './domain';
 import {csvHeaders,encodeCsv} from '../src/lib/csv';
 import {imports} from './imports';
 import {requireClientCertificate} from './client-cert';
@@ -51,7 +51,7 @@ async function api(req:Request,env:Env,url:URL):Promise<Response>{
  assert(['POST','PATCH','DELETE'].includes(method),405,'操作できません。');const b=await bodyOf(req);
  if(resource==='imports'){assert(actor.role==='ADMIN',403,'管理者のみ操作できます。');return json(await imports(env,actor,id,operation,b));}
  const expected=z.number().int().nonnegative().parse(b.revision);const meta=await revision(env.DB);assert(meta.revision===expected,409,'別のスタッフが更新しました。再読込してください。');
- let entries:{kind:string;doc:Doc}[]=[],extra:ReturnType<typeof env.DB.prepare>[]=[],entity=id??resource,revokeLater:(string|null)[]=[],temporary:{password:string;expires:string}|null=null;
+ let result:Record<string,unknown>={},entries:{kind:string;doc:Doc}[]=[],extra:ReturnType<typeof env.DB.prepare>[]=[],entity=id??resource,revokeLater:(string|null)[]=[],temporary:{password:string;expires:string}|null=null;
  if(resource==='appointments'&&id==='bulk-delete'){
  // 日付見出しの「この日の予定を一括削除」。表示中の予定をまとめて取り消す。繰り返し予定はその回だけ。1件でも古ければ何も消さない。
  assert(method==='POST'&&!operation,405,'操作できません。');assert(actor.role==='ADMIN',403,'管理者のみ操作できます。');
@@ -71,6 +71,23 @@ async function api(req:Request,env:Env,url:URL):Promise<Response>{
  const day=dateKey(String(a.startsAt));days.add(day);entries.push({kind:resource,doc:{...a,startsAt:jstDate(day,u.startTime).toISOString(),endsAt:jstDate(day,u.endTime).toISOString(),version:a.version+1,exception:!!a.seriesId}});}
  for(const d of deletes){const a=await get(env.DB,d.id,'appointments');assert(a&&!a.cancelled,409,'すでに削除された予定があります。再読込してください。');version(a,d);days.add(dateKey(String(a.startsAt)));entries.push(...await remove(env.DB,a,'one'));}
  entity=[...days].sort().join(',')+':'+ids.length;
+ }else if(resource==='appointments'&&id==='bulk-copy'){
+ // 「予定をまとめて複製」。選んだ予定を別の日へ同じ時刻の単発予定として写す。担当を指定すれば全件その担当にする。
+ // 同じ患者・同じ開始時刻の予定がすでにある分は写さない（二重に押しても増えない）。マークは写さない（初診などはその回だけのため）。1件でも古ければ何も作らない。
+ assert(method==='POST'&&!operation,405,'操作できません。');
+ const items=z.array(z.object({id:z.string().max(100),version:z.number().int().positive()})).min(1,'複製する予定がありません。').max(300,'一度に複製できるのは300件までです。').parse(b.items);
+ assert(new Set(items.map(i=>i.id)).size===items.length,400,'同じ予定が含まれています。');
+ const date=keySchema.parse(b.date),staffIds=b.staffIds==null?null:z.array(z.string().max(100)).min(1).max(20).parse(b.staffIds),copyMemo=z.boolean().default(true).parse(b.copyMemo);
+ const existing=await list(env.DB,'appointments','AND cancelled=0 AND starts_at>=? AND starts_at<?',[jstDate(date).toISOString(),jstDate(addDays(date,1)).toISOString()]);
+ const taken=new Set(existing.filter(a=>a.patientId).map(a=>a.patientId+'@'+a.startsAt));let skipped=0;
+ for(const item of items){const a=await get(env.DB,item.id,'appointments');assert(a&&!a.cancelled,409,'すでに削除された予定があります。再読込してください。');version(a,item);
+ assert(dateKey(String(a.startsAt))!==date,400,'複製元と同じ日には複製できません。');
+ const startsAt=jstDate(date,timeKey(String(a.startsAt))).toISOString(),endsAt=jstDate(date,timeKey(String(a.endsAt))).toISOString(),ids=staffIds??(a.staffIds as string[]);
+ if(a.patientId&&taken.has(a.patientId+'@'+startsAt)){skipped++;continue;}
+ await references(env.DB,{patientId:a.patientId as string|null,staffIds:ids});if(a.patientId)taken.add(a.patientId+'@'+startsAt);
+ entries.push({kind:resource,doc:{id:crypto.randomUUID(),version:1,patientId:a.patientId,title:a.title,staffIds:ids,memo:copyMemo?a.memo:'',mark:'',startsAt,endsAt,seriesId:null,occurrenceDate:null,exception:false,cancelled:false}});}
+ assert(entries.length,409,'複製先の日に同じ予定がすでにあります。');
+ entity=date+':'+entries.length;result={copied:entries.length,skipped};
  }else if(resource==='settings'&&!id&&method==='PATCH'){
  // 事業所の設定（ルートの出発・到着地）。管理者だけが変えられる。
  assert(actor.role==='ADMIN',403,'管理者のみ操作できます。');
@@ -119,10 +136,10 @@ async function api(req:Request,env:Env,url:URL):Promise<Response>{
  }
  entries=[{kind:resource,doc:{...data,id:nextId,version:current?current.version+1:1}}];entity=nextId;
  }else throw new ApiError(404,'APIがありません。');
- await commit(env.DB,expected,[bulkPut(env.DB,entries),...extra],actor.id,method+'_'+resource+(resource==='appointments'&&(id==='bulk-delete'||id==='batch-update')?'_'+id:operation?'_'+operation:''),entity);
+ await commit(env.DB,expected,[bulkPut(env.DB,entries),...extra],actor.id,method+'_'+resource+(resource==='appointments'&&(id==='bulk-delete'||id==='batch-update'||id==='bulk-copy')?'_'+id:operation?'_'+operation:''),entity);
  // 無効にしたスタッフの証明書は D1 で失効済み。Cloudflare 側の失効は失敗しても保存結果は変えない。
  if(revokeLater.length)await revokeAtCloudflare(env,revokeLater);
- return json({ok:true,revision:expected+1,id:entity,...(temporary?{temporaryPassword:temporary.password,temporaryExpires:temporary.expires}:{})});
+ return json({ok:true,revision:expected+1,id:entity,...result,...(temporary?{temporaryPassword:temporary.password,temporaryExpires:temporary.expires}:{})});
 }
 export default {
  // Slack の #出勤退勤 を読む（wrangler の Cron Trigger で毎分）。
