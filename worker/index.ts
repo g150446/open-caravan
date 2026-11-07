@@ -2,7 +2,7 @@ import {serveStatic} from './static';
 import {z} from 'zod';
 import type {Env,Actor,Doc} from './types';
 import {assert,ApiError} from '../src/lib/errors';
-import {appointmentSchema,facilitySchema,keySchema,patientSchema,settingsSchema,staffSchema,timeSchema} from '../src/lib/validation';
+import {appointmentSchema,facilitySchema,keySchema,patientSchema,pharmacySchema,settingsSchema,staffSchema,timeSchema} from '../src/lib/validation';
 import {addDays,dateKey,jstDate,timeKey} from '../src/lib/date';
 import {authenticate,origin,login,setup,setupCheck,cookieName,changePassword,temporaryFields,audit} from './auth';
 import {get,list,revision,commit,put,bulkPut,safeStaff,snapshot} from './store';
@@ -18,6 +18,8 @@ import {slackIds} from '../src/lib/slack';
 const json=(body:unknown,status=200,headers:Record<string,string>={})=>new Response(JSON.stringify(body),{status,headers:{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store',...headers}});
 const security:Record<string,string>={'Strict-Transport-Security':'max-age=31536000','X-Content-Type-Options':'nosniff','X-Frame-Options':'DENY','Referrer-Policy':'no-referrer','Permissions-Policy':'camera=(), microphone=(), geolocation=()','Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"};
 async function bodyOf(req:Request){assert(Number(req.headers.get('content-length')??0)<=2000000,413,'データが大きすぎます。');const text=await req.text();assert(new TextEncoder().encode(text).length<=2000000,413,'データが大きすぎます。');let b:Record<string,unknown>;try{b=JSON.parse(text);}catch{throw new ApiError(400,'JSONが不正です。');}assert(b&&typeof b==='object'&&!Array.isArray(b),400,'送信データが不正です。');return b;}
+// 古い画面や別の更新経路で送られてこなかった希望日・NGと薬局は、今の値を保つ。
+const kept=(b:Record<string,unknown>,current:Doc|null)=>({visitPrefs:b.visitPrefs===undefined?current?.visitPrefs:b.visitPrefs,pharmacyId:b.pharmacyId===undefined?(current?.pharmacyId??null):b.pharmacyId});
 function version(doc:Doc,b:Record<string,unknown>){assert(b.version===doc.version,409,'別のスタッフが更新しました。再読込してください。');}
 async function api(req:Request,env:Env,url:URL):Promise<Response>{
  const [resource,id,operation,...rest]=url.pathname.slice(5).split('/');const certificateRoute=resource==='staff'&&!!id&&operation==='certificates'&&rest.length<=1,geoRoute=resource==='geo';assert(!rest.length||certificateRoute||geoRoute,404,'APIがありません。');const method=req.method;
@@ -38,7 +40,7 @@ async function api(req:Request,env:Env,url:URL):Promise<Response>{
  if(resource==='slack'&&id==='backfill'&&!operation&&method==='POST')return json(await backfillSlack(env,actor,await bodyOf(req)));
  if(resource==='shifts')return json(await shifts(env,actor,method,id,url.searchParams,method==='GET'?null:await bodyOf(req)));
  if(resource==='changes'&&method==='GET')return json(await revision(env.DB));
- if(resource==='bootstrap'&&method==='GET')return json(await snapshot(env.DB,async()=>{const [staff,patients,facilities,settings,slack]=await Promise.all([list(env.DB,'staff'),list(env.DB,'patients'),list(env.DB,'facilities'),getSettings(env.DB),slackStatus(env)]);return {staff:staff.map(safeStaff),patients,facilities,settings:{...settings,routeMode:env.GOOGLE_MAPS_API_KEY?'google':'estimate',slack}};}));
+ if(resource==='bootstrap'&&method==='GET')return json(await snapshot(env.DB,async()=>{const [staff,patients,facilities,pharmacies,settings,slack]=await Promise.all([list(env.DB,'staff'),list(env.DB,'patients'),list(env.DB,'facilities'),list(env.DB,'pharmacies'),getSettings(env.DB),slackStatus(env)]);return {staff:staff.map(safeStaff),patients,facilities,pharmacies,settings:{...settings,routeMode:env.GOOGLE_MAPS_API_KEY?'google':'estimate',slack}};}));
  if(resource==='appointments'&&method==='GET'){
  if(id)return json(await snapshot(env.DB,async()=>{const a=await get(env.DB,id,'appointments');assert(a&&!a.cancelled,404,'予定が見つかりません。');let previous:Doc[]=[],next:Doc[]=[];if(a.patientId){previous=(await list(env.DB,'appointments','AND patient_id=? AND cancelled=0 AND starts_at<? ORDER BY starts_at DESC LIMIT 3',[a.patientId,a.startsAt]));next=await list(env.DB,'appointments','AND patient_id=? AND cancelled=0 AND starts_at>? ORDER BY starts_at LIMIT 3',[a.patientId,a.startsAt]);}return {appointment:a,previous,next,series:a.seriesId?await get(env.DB,String(a.seriesId),'series'):null};}));
  const from=keySchema.parse(url.searchParams.get('from')),to=keySchema.parse(url.searchParams.get('to'));assert(to>from&&to<=addDays(from,370),400,'取得期間は1〜370日で指定してください。');
@@ -118,13 +120,14 @@ async function api(req:Request,env:Env,url:URL):Promise<Response>{
  assert(!future?.n,409,`今後の予定が${future?.n}件あります。担当・同行を変更してから削除するか、停止してください。`);
  const {passwordHash,...rest}=current;entries=[{kind:resource,doc:{...rest,active:false,deleted:true,version:current.version+1}}];
  revokeLater=await activeCertificateIds(env,id);extra.push(env.DB.prepare('DELETE FROM sessions WHERE staff_id=?').bind(id),revokeAllStatement(env,id));
- }else if(['patients','facilities','staff'].includes(resource)){
+ }else if(['patients','facilities','pharmacies','staff'].includes(resource)){
  assert(method==='POST'&&!id||method==='PATCH'&&id,405,'操作できません。');let current:Doc|null=null;if(id){current=await get(env.DB,id,resource);assert(current&&!current.deleted,404,'データがありません。');version(current,b);}const nextId=id??crypto.randomUUID();
- let data:Record<string,unknown>;
+ let data:Record<string,unknown>;const pharmacyExists=async(d:Record<string,unknown>)=>{if(d.pharmacyId)assert(await get(env.DB,String(d.pharmacyId),'pharmacies'),400,'薬局がありません。');};
  if(resource==='patients'){
  if(operation==='handover'&&current)data={...current,handover:z.string().max(30000).parse(b.handover)};
- else{assert(!operation,405,'操作できません。');data=patientSchema.parse({...b,visitFrequency:b.visitFrequency===undefined?(current?.visitFrequency??''):b.visitFrequency});if(data.facilityId)assert(await get(env.DB,String(data.facilityId),'facilities'),400,'施設がありません。');}
- }else if(resource==='facilities'){assert(!operation,405,'操作できません。');data=facilitySchema.parse(b);}
+ else{assert(!operation,405,'操作できません。');data=patientSchema.parse({...b,...kept(b,current),visitFrequency:b.visitFrequency===undefined?(current?.visitFrequency??''):b.visitFrequency});if(data.facilityId)assert(await get(env.DB,String(data.facilityId),'facilities'),400,'施設がありません。');await pharmacyExists(data);}
+ }else if(resource==='facilities'){assert(!operation,405,'操作できません。');data=facilitySchema.parse({...b,...kept(b,current)});await pharmacyExists(data);}
+ else if(resource==='pharmacies'){assert(!operation,405,'操作できません。');data=pharmacySchema.parse(b);}
  else{
  assert(actor.role==='ADMIN',403,'管理者のみ操作できます。');assert(!operation,405,'操作できません。');const {password:_ignored,...fields}=staffSchema.parse(b);data=fields;if(id===actor.id)assert(data.active&&data.role==='ADMIN',400,'自分の管理者アカウントを無効にできません。');
  if(data.slackUserId){const ids=slackIds(String(data.slackUserId));assert(!(await list(env.DB,'staff')).some(s=>s.id!==id&&!s.deleted&&slackIds(String(s.slackUserId??'')).some(x=>ids.includes(x))),409,'この Slack メンバーIDは別のスタッフに登録されています。');}
@@ -136,7 +139,7 @@ async function api(req:Request,env:Env,url:URL):Promise<Response>{
  }
  entries=[{kind:resource,doc:{...data,id:nextId,version:current?current.version+1:1}}];entity=nextId;
  }else throw new ApiError(404,'APIがありません。');
- await commit(env.DB,expected,[bulkPut(env.DB,entries),...extra],actor.id,method+'_'+resource+(resource==='appointments'&&(id==='bulk-delete'||id==='batch-update'||id==='bulk-copy')?'_'+id:operation?'_'+operation:''),entity);
+ await commit(env.DB,expected,[resource==='pharmacies'?put(env.DB,resource,entries[0].doc):bulkPut(env.DB,entries),...extra],actor.id,method+'_'+resource+(resource==='appointments'&&(id==='bulk-delete'||id==='batch-update'||id==='bulk-copy')?'_'+id:operation?'_'+operation:''),entity);
  // 無効にしたスタッフの証明書は D1 で失効済み。Cloudflare 側の失効は失敗しても保存結果は変えない。
  if(revokeLater.length)await revokeAtCloudflare(env,revokeLater);
  return json({ok:true,revision:expected+1,id:entity,...result,...(temporary?{temporaryPassword:temporary.password,temporaryExpires:temporary.expires}:{})});

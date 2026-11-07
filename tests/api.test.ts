@@ -44,3 +44,23 @@ let r=await f.mutate('appointments','POST',{patientId:p.id,title:'',date:day,sta
 let a=(await f.call(`appointments?from=${day}&to=${addDays(day,21)}`)).data.data;a=a.filter((x:any)=>!x.cancelled).sort((x:any,y:any)=>x.startsAt.localeCompare(y.startsAt));assert.deepEqual(a.map((x:any)=>x.mark),['初','','']);
 r=await f.mutate('appointments/'+a[1].id,'PATCH',{patientId:p.id,title:'',date:addDays(day,7),startTime:'09:00',endTime:'09:30',staffIds:[admin.id],memo:'',mark:'注',version:a[1].version});assert.equal(r.res.status,200,JSON.stringify(r.data));a=(await f.call(`appointments?from=${day}&to=${addDays(day,21)}`)).data.data.filter((x:any)=>!x.cancelled).sort((x:any,y:any)=>x.startsAt.localeCompare(y.startsAt));assert.deepEqual(a.map((x:any)=>x.mark),['初','注','']);
 r=await f.mutate('appointments','POST',{patientId:p.id,title:'',date:day,startTime:'10:00',endTime:'10:30',staffIds:[admin.id],memo:'',mark:'X'});assert.equal(r.res.status,400);f.db.close();});
+test('visit preferences and pharmacies are saved on patients and facilities',async()=>{const f=fixture();await f.initialize();
+ let r=await f.mutate('pharmacies','POST',{name:'みどり薬局',address:'札幌市中央区1-1',phone:'011-123-4567',fax:'011-123-4568',openDays:[1,2,3,4,5,6],holidayClosed:true,hours:'平日 9:00〜18:00'});assert.equal(r.res.status,200,JSON.stringify(r.data));const pharmacyId=r.data.id;
+ assert.equal((await f.mutate('pharmacies','POST',{name:'英字FAX',fax:'abc'})).res.status,400);
+ assert.equal((await f.mutate('pharmacies','POST',{name:'営業日不正',openDays:[7]})).res.status,400);
+ const prefs={preferred:[{weekday:1,part:'am'}],ng:[{weekday:3,part:'pm'}],note:'入浴日'};
+ r=await f.mutate('facilities','POST',{name:'ホームA',address:'',visitPrefs:{preferred:[],ng:[{weekday:5,part:'am'}],note:''},pharmacyId});assert.equal(r.res.status,200,JSON.stringify(r.data));const facilityId=r.data.id;
+ assert.equal((await f.mutate('facilities','POST',{name:'ホームB',address:'',pharmacyId:'missing'})).res.status,400);
+ assert.equal((await f.mutate('facilities','POST',{name:'ホームC',address:'',visitPrefs:{preferred:[{weekday:7,part:'am'}],ng:[],note:''}})).res.status,400);
+ assert.equal((await f.mutate('facilities','POST',{name:'ホームD',address:'',visitPrefs:{preferred:[{weekday:2,part:'am'}],ng:[{weekday:2,part:'am'}],note:''}})).res.status,400);
+ r=await f.mutate('patients','POST',{number:'P1',name:'架空患者',address:'',movacalUrl:'',facilityId,handover:'',visitPrefs:prefs,pharmacyId});assert.equal(r.res.status,200,JSON.stringify(r.data));const patientId=r.data.id;
+ let b=(await f.call('bootstrap')).data.data;assert.equal(b.pharmacies.length,1);assert.equal(b.pharmacies[0].fax,'011-123-4568');assert.deepEqual(b.pharmacies[0].openDays,[1,2,3,4,5,6]);
+ let p=b.patients.find((x:any)=>x.id===patientId);assert.deepEqual(p.visitPrefs,prefs);assert.equal(p.pharmacyId,pharmacyId);
+ assert.deepEqual(b.facilities.find((x:any)=>x.id===facilityId).visitPrefs.ng,[{weekday:5,part:'am'}]);
+ // 古い画面のように visitPrefs と pharmacyId を送らない更新では、今の値を保つ。
+ r=await f.mutate('patients/'+patientId,'PATCH',{number:'P1',name:'架空患者（改名）',address:'',movacalUrl:'',facilityId,handover:'',version:p.version});assert.equal(r.res.status,200,JSON.stringify(r.data));
+ b=(await f.call('bootstrap')).data.data;p=b.patients.find((x:any)=>x.id===patientId);assert.deepEqual(p.visitPrefs,prefs);assert.equal(p.pharmacyId,pharmacyId);
+ // 明示的に null を送れば薬局を外せる。
+ r=await f.mutate('patients/'+patientId,'PATCH',{...p,pharmacyId:null});assert.equal(r.res.status,200);assert.equal((await f.call('bootstrap')).data.data.patients.find((x:any)=>x.id===patientId).pharmacyId,null);
+ const ph=b.pharmacies[0];r=await f.mutate('pharmacies/'+ph.id,'PATCH',{...ph,hours:'平日 9:00〜19:00'});assert.equal(r.res.status,200);assert.equal((await f.call('bootstrap')).data.data.pharmacies[0].hours,'平日 9:00〜19:00');
+ f.db.close();});

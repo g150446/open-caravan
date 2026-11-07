@@ -4,7 +4,7 @@ import {jstDate} from '../src/lib/date';
 import type {Appointment,Masters} from '../src/models';
 const day='2026-11-19';
 const m:Masters={staff:[{id:'d',version:1,login:'d',name:'医師 一郎',profession:'医師',color:'#111111',role:'ADMIN',active:true},{id:'n',version:1,login:'n',name:'看護 花子',profession:'看護師',color:'#222222',role:'STAFF',active:true}],
- facilities:[{id:'f',version:1,name:'ホームA',address:'札幌市1-1'}],
+ facilities:[{id:'f',version:1,name:'ホームA',address:'札幌市1-1'}],pharmacies:[],
  patients:[{id:'p1',version:1,number:'001',name:'山田 花',kana:'やまだ はな',address:'',movacalUrl:'',handover:'申し送り"引用"',facilityId:'f',active:true},{id:'p2',version:1,number:'002',name:'<鈴木>',kana:'すずき',address:'江別市2-2',movacalUrl:'',handover:'',facilityId:null,active:true}]};
 const ap=(id:string,start:string,patientId:string|null,staffIds:string[],extra:Partial<Appointment>={}):Appointment=>({id,version:1,patientId,title:'会議',staffIds,startsAt:jstDate(day,start).toISOString(),endsAt:jstDate(day,start.slice(0,3)+'30').toISOString(),memo:'',seriesId:null,occurrenceDate:null,exception:false,cancelled:false,...extra});
 const items=[ap('c','14:00','p2',['d','n']),ap('a','09:00','p1',['d','n'],{mark:'初',memo:'採血\n血圧'}),ap('b','10:00',null,['n'])];

@@ -1,10 +1,12 @@
 import type {Database,Doc,Row,Statement} from './types';
 import {assert,ApiError} from '../src/lib/errors';
 export function decode(row:Row):Doc {return {...JSON.parse(row.data),id:row.id,version:row.version};}
-export async function get(db:Database,id:string,kind?:string){const r=await db.prepare('SELECT id,version,data FROM records WHERE id=?'+(kind?' AND kind=?':'')).bind(...(kind?[id,kind]:[id])).first<Row>();return r?decode(r):null;}
-export async function list(db:Database,kind:string,where='',args:unknown[]=[]){const r=await db.prepare('SELECT id,version,data FROM records WHERE kind=? '+where).bind(kind,...args).all<Row>();return r.results.map(decode);}
+// 薬局だけは別テーブル（records の kind が CHECK 制約で固定のため）。
+export async function get(db:Database,id:string,kind?:string){if(kind==='pharmacies'){const r=await db.prepare('SELECT id,version,data FROM pharmacies WHERE id=?').bind(id).first<Row>();return r?decode(r):null;}const r=await db.prepare('SELECT id,version,data FROM records WHERE id=?'+(kind?' AND kind=?':'')).bind(...(kind?[id,kind]:[id])).first<Row>();return r?decode(r):null;}
+export async function list(db:Database,kind:string,where='',args:unknown[]=[]){if(kind==='pharmacies')return (await db.prepare('SELECT id,version,data FROM pharmacies ORDER BY json_extract(data,\'$.name\')').all<Row>()).results.map(decode);const r=await db.prepare('SELECT id,version,data FROM records WHERE kind=? '+where).bind(kind,...args).all<Row>();return r.results.map(decode);}
 export async function revision(db:Database){const m=await db.prepare('SELECT revision,initialized FROM meta WHERE id=1').first<{revision:number;initialized:number}>();assert(m,503,'データベースを準備してください。');return m;}
 export function put(db:Database,kind:string,doc:Doc){
+  if(kind==='pharmacies')return db.prepare('INSERT INTO pharmacies(id,data,version) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data,version=excluded.version').bind(doc.id,JSON.stringify(doc),doc.version);
   const lookup=kind==='staff'?(doc.deleted?null:doc.login):kind==='patients'?doc.number:kind==='facilities'?doc.name:null;
   return db.prepare(`INSERT INTO records(id,kind,lookup,data,version,starts_at,patient_id,series_id,occurrence_date,cancelled) VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET lookup=excluded.lookup,data=excluded.data,version=excluded.version,starts_at=excluded.starts_at,patient_id=excluded.patient_id,series_id=excluded.series_id,occurrence_date=excluded.occurrence_date,cancelled=excluded.cancelled`).bind(doc.id,kind,lookup,JSON.stringify(doc),doc.version,doc.startsAt??null,doc.patientId??null,doc.seriesId??null,doc.occurrenceDate??null,doc.cancelled?1:0);
 }
