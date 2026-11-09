@@ -15,6 +15,7 @@ import {routes,getSettings,saveSettings,geoDictionary,geocodes} from './routes';
 import {attendance,shifts} from './attendance';
 import {backfillSlack,pollSlack,slackStatus} from './slack';
 import {slackIds} from '../src/lib/slack';
+import {monitorConnectSource,monitorTicket} from './monitor';
 const json=(body:unknown,status=200,headers:Record<string,string>={})=>new Response(JSON.stringify(body),{status,headers:{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store',...headers}});
 const security:Record<string,string>={'Strict-Transport-Security':'max-age=31536000','X-Content-Type-Options':'nosniff','X-Frame-Options':'DENY','Referrer-Policy':'no-referrer','Permissions-Policy':'camera=(), microphone=(), geolocation=()','Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"};
 async function bodyOf(req:Request){assert(Number(req.headers.get('content-length')??0)<=2000000,413,'データが大きすぎます。');const text=await req.text();assert(new TextEncoder().encode(text).length<=2000000,413,'データが大きすぎます。');let b:Record<string,unknown>;try{b=JSON.parse(text);}catch{throw new ApiError(400,'JSONが不正です。');}assert(b&&typeof b==='object'&&!Array.isArray(b),400,'送信データが不正です。');return b;}
@@ -32,6 +33,7 @@ async function api(req:Request,env:Env,url:URL):Promise<Response>{
  if(resource==='auth'&&id==='password'&&method==='POST')return json(await changePassword(env,actor,session.id,await bodyOf(req)));
  // 仮パスワードのままでは、自分のパスワードを設定するまで他のAPIを使えない。
  assert(!actor.mustChangePassword,403,'パスワードを設定してください。');
+ if(resource==='monitor'&&id==='ticket'&&!operation&&method==='POST')return json(await monitorTicket(req,env,actor,await bodyOf(req)));
  if(geoRoute){assert(method==='GET',405,'操作できません。');return geoDictionary(url.pathname.slice('/api/geo/'.length),url.searchParams);}
  if(resource==='geocodes'&&!id)return json(await geocodes(env,actor,method,method==='POST'?await bodyOf(req):null));
  if(certificateRoute)return json(await certificates(req,env,actor,id,rest[0],method==='POST'?await bodyOf(req):null));
@@ -150,5 +152,5 @@ export default {
  async fetch(req:Request,env:Env){
  let response:Response;try{await requireClientCertificate(req,env);const url=new URL(req.url);if(url.pathname.startsWith('/api/')){assert(env.DB,503,'データベースの設定が必要です。');response=await api(req,env,url);}else{response=env.ASSETS?await env.ASSETS.fetch(req):serveStatic(req);}}
  catch(e){if(e instanceof ApiError)response=json({error:e.message},e.status);else if(e instanceof z.ZodError)response=json({error:e.issues.map(i=>i.message).join(' / ')},400);else{console.error('request_failed',e instanceof Error?e.name:'unknown');response=json({error:'処理に失敗しました。入力を保持したまま再試行してください。'},500);}}
- const result=new Response(response.body,response);for(const [k,v]of Object.entries(security))result.headers.set(k,v);return result;
+ const result=new Response(response.body,response);for(const [k,v]of Object.entries(security))result.headers.set(k,v);result.headers.set('Content-Security-Policy',security['Content-Security-Policy'].replace("connect-src 'self'","connect-src 'self'"+monitorConnectSource(env)));return result;
 }};

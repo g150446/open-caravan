@@ -1,6 +1,6 @@
 import type {Recurrence} from './lib/date';
 import type {ShiftPattern,WorkSystem} from './lib/attendance';
-export interface Staff {id:string;version:number;login:string;name:string;kana?:string;profession:string;color:string;role:'ADMIN'|'STAFF';active:boolean;deleted?:boolean;mustChangePassword?:boolean;temporaryExpires?:string;workSystem?:WorkSystem;slackUserId?:string;}
+export interface Staff {id:string;version:number;login:string;name:string;kana?:string;profession:string;color:string;role:'ADMIN'|'STAFF';active:boolean;deleted?:boolean;mustChangePassword?:boolean;temporaryExpires?:string;workSystem?:WorkSystem;slackUserId?:string;canMonitor?:boolean;}
 // 診察希望日・NG: 曜日（0=日〜6=土）と午前／午後の組み合わせで登録する。
 export type DayPart='am'|'pm';export interface VisitSlot {weekday:number;part:DayPart;}
 export interface VisitPrefs {preferred:VisitSlot[];ng:VisitSlot[];note:string;}

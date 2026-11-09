@@ -157,6 +157,8 @@ npm exec --package=wrangler@4 -- wrangler deploy
 | `GOOGLE_MAPS_API_KEY` | シークレット | 任意。訪問ルートを道路の距離・時間で計算する場合だけ設定。Google Cloud で Routes API と Maps Static API を有効にして作ったキー（API の制限でこの2つだけに絞る）。未設定なら見積もりモードで動く |
 | `SLACK_BOT_TOKEN` | シークレット | 任意。Slack の #出勤退勤 の投稿を打刻にする場合だけ設定。下の「Slack の #出勤退勤 との連携」で作る Bot User OAuth Token（`xoxb-…`） |
 | `SLACK_CHANNEL_ID` | テキスト | 任意。#出勤退勤 のチャンネルID（`C…`） |
+| `MONITOR_TICKET_SECRET` | シークレット | 任意。会話モニタリング用。32文字以上の乱数で、音声ブリッジの設定と同じ値 |
+| `MONITOR_WS_URL` | テキスト | 任意。会話モニタリングの配信サーバー（`wss://…/ws`）。CSP の `connect-src` にも追加される |
 | `AUTH_PEPPER` | シークレット | 暗号学的乱数32バイト以上。パスワードのハッシュに使用 |
 | `SETUP_TOKEN` | シークレット | 初期管理者登録専用の乱数トークン |
 | `SETUP_EXPIRES` | テキスト | 初期リンク期限のUnix時刻、ミリ秒 |
@@ -218,8 +220,11 @@ MacのChromeでは、ポリシー `AutoSelectCertificateForUrls` を設定する
 
 ```sh
 defaults write com.google.Chrome AutoSelectCertificateForUrls -array -string \
-  '{"pattern":"https://caravan.YOUR_DOMAIN","filter":{"ISSUER":{"CN":"Managed CA YOUR_ACCOUNT_ID"}}}'
+  '{"pattern":"https://caravan.YOUR_DOMAIN","filter":{"ISSUER":{"CN":"Managed CA YOUR_ACCOUNT_ID"}}}' \
+  '{"pattern":"https://monitor.YOUR_DOMAIN","filter":{"ISSUER":{"CN":"Managed CA YOUR_ACCOUNT_ID"}}}'
 ```
+
+会話モニタリングの音声は別のホスト（`monitor.YOUR_DOMAIN`）から届きます。Chrome は WebSocket では証明書の選択画面を出さないため、タブを開いたときに通常のリクエストを1回送り、Chrome の起動ごとに1回、選択画面を出します。上のポリシーを設定した端末では、選択画面も出ません。
 
 ブロック画面から抜けられない場合: まずHTTP/3が無効になっているかを確認します（CloudflareのセキュリティイベントでHTTPバージョンが `HTTP/3` なら、これが原因）。そのうえで、AndroidはChromeを「設定 → アプリ → Chrome → **強制停止**」してから開き直し、証明書を選択します。MacはChromeを⌘Qで完全に終了してから開き直します。Cloudflare Freeプランではブロック画面の文言を変更できません（Custom ErrorsはPro以上）。
 
