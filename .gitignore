@@ -14,3 +14,30 @@ certificates/
 *.p12
 *.pfx
 handoff.md
+
+# Patient imports, exports, and printed schedules
+*.csv
+*.tsv
+*.xls
+*.xlsx
+*.xlsm
+*.xlsb
+*.ods
+*.pdf
+
+# Local databases and SQLite sidecar files
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+
+# Database dumps and compressed backups
+*.sql
+!/migrations/*.sql
+*.sql.gz
+*.zip
+*.tar
+*.tar.gz
+*.tgz

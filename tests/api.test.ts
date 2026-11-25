@@ -2,6 +2,7 @@ import test from 'node:test';import assert from 'node:assert/strict';import {rea
 import {SQLite} from '../scripts/sqlite';import sourceWorker from '../worker/index';
 const worker=process.env.TEST_BUNDLE?(await import('../build/worker.js' as string)).default:sourceWorker;import type {Env} from '../worker/types';
 import {dateKey,weekStart,addDays} from '../src/lib/date';
+import {encodeCsv,readImportRows} from '../src/lib/csv';
 function fixture(){const db=new SQLite();for(const file of readdirSync('migrations').filter(f=>f.endsWith('.sql')).sort())db.raw.exec(readFileSync('migrations/'+file,'utf8'));const env:Env={MTLS_MODE:'local',DB:db,APP_ORIGIN:'http://127.0.0.1:3000',AUTH_PEPPER:'test-secret-pepper-32-bytes-long-value',SETUP_TOKEN:'test-setup-token-32-bytes-long-value',SETUP_EXPIRES:String(Date.now()+86400000)};let cookie='',csrf='',rev=0;
  async function call(path:string,method='GET',body?:unknown,extra:Record<string,string>={}){const res=await worker.fetch(new Request(env.APP_ORIGIN+'/api/'+path,{method,headers:{Origin:env.APP_ORIGIN,'Content-Type':'application/json',Cookie:cookie,'X-CSRF-Token':csrf,...extra},...(body!==undefined?{body:JSON.stringify(body)}:{})}),env);let data:any;try{data=await res.json();}catch{data=null;}return {res,data};}
  async function initialize(){let r=await call('setup','POST',{token:env.SETUP_TOKEN,login:'admin',name:'テスト管理者',password:'test-password-long-enough'});assert.equal(r.res.status,200,JSON.stringify(r.data));r=await call('auth/login','POST',{login:'admin',password:'test-password-long-enough'});assert.equal(r.res.status,200);cookie=r.res.headers.get('set-cookie')!.split(';')[0];csrf=r.data.csrf;rev=1;return r.data.staff;}
@@ -64,3 +65,55 @@ test('visit preferences and pharmacies are saved on patients and facilities',asy
  r=await f.mutate('patients/'+patientId,'PATCH',{...p,pharmacyId:null});assert.equal(r.res.status,200);assert.equal((await f.call('bootstrap')).data.data.patients.find((x:any)=>x.id===patientId).pharmacyId,null);
  const ph=b.pharmacies[0];r=await f.mutate('pharmacies/'+ph.id,'PATCH',{...ph,hours:'平日 9:00〜19:00'});assert.equal(r.res.status,200);assert.equal((await f.call('bootstrap')).data.data.pharmacies[0].hours,'平日 9:00〜19:00');
  f.db.close();});
+
+test('organization CSV keeps kana and patient links survive older editing and import paths',async()=>{
+ const f=fixture();
+ try{
+  await f.initialize();
+  const rows=[
+   ['施設','架空ホーム','かくうほーむ','架空市1','011-000-0001',''],
+   ['薬局','架空薬局','ｶｸｳﾔｯｷｮｸ','架空市2','011-000-0002',''],
+   ['訪問看護ステーション','架空看護','かくうかんご','架空市3','011-000-0003',''],
+   ['居宅介護支援事業所','架空支援','かくうしえん','架空市4','011-000-0004',''],
+  ];
+  const raw=encodeCsv([
+   ['施設名','施設名カナ','タイプ','住所','tel','fax','ログインPW','メモ'],
+   ['架空ホーム','かくうほーむ','2','架空市1','011-000-0001','','sample-password','sample-private-note'],
+  ]);
+  assert.deepEqual(readImportRows(raw,'organizations'),[rows[0]]);
+  const start=await f.mutate('imports/organizations/start','POST',{});
+  const {id}=start.data;
+  const first=await f.call('imports/organizations/preview','POST',{id,chunk:0,rows});
+  assert.equal(first.data.valid,true);
+  const duplicate=await f.call('imports/organizations/preview','POST',{id,chunk:1,rows:[
+   ['薬局','架空薬局','カクウヤッキョク','北海道架空市2','011-000-0002',''],
+  ]});
+  assert.equal(duplicate.data.valid,true);
+  assert.equal(duplicate.data.rows[0].action,'登録済み');
+  assert.equal((await f.call('imports/organizations/commit','POST',{id})).res.status,200);
+  const read=async()=>(await f.call('bootstrap')).data;
+  let {data,revision}=await read();
+  assert.equal(data.facilities[0].phone,'011-000-0001');
+  assert.equal(data.pharmacies.length,1);
+  assert.equal(data.pharmacies[0].kana,'カクウヤッキョク');
+  assert.deepEqual(data.pharmacies[0].openDays,[]);
+  const nursingStationId=data.nursingStations[0].id;
+  const careSupportOfficeId=data.careSupportOffices[0].id;
+  const core={number:'LINK01',name:'架空患者',address:'',movacalUrl:'',facilityId:data.facilities[0].id};
+  const links={pharmacyId:data.pharmacies[0].id,nursingStationId,careSupportOfficeId};
+  const wrong=await f.call('patients','POST',{...core,...links,nursingStationId:careSupportOfficeId,revision});
+  assert.equal(wrong.res.status,400);
+  const created=await f.call('patients','POST',{...core,...links,revision});
+  assert.equal(created.res.status,200);
+  const patientPath='patients/'+created.data.id;
+  const legacy=await f.call(patientPath,'PATCH',{...core,version:1,revision:created.data.revision});
+  assert.equal(legacy.res.status,200);
+  const update=await f.call('imports/patients/start','POST',{revision:legacy.data.revision});
+  assert.equal((await f.call('imports/patients/preview','POST',{id:update.data.id,chunk:0,rows:[['LINK01','架空患者','','','架空ホーム','','']]})).data.valid,true);
+  assert.equal((await f.call('imports/patients/commit','POST',{id:update.data.id})).res.status,200);
+  ({data,revision}=await read());
+  for(const [key,value] of Object.entries(links))assert.equal(data.patients[0][key],value);
+  assert.equal((await f.call(patientPath,'PATCH',{...core,nursingStationId:null,version:data.patients[0].version,revision})).res.status,200);
+  assert.equal((await read()).data.patients[0].nursingStationId,null);
+ }finally{f.db.close();}
+});
