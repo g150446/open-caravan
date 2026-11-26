@@ -25,7 +25,20 @@ export function createMonitorPlayer(volume:number){
  const players=[channelPlayer(audio,master),channelPlayer(audio,master)];
  return {
   resume:()=>audio.resume(),
+  running:()=>audio.state==='running',
+  // 電話の着信や画面の消灯で、ブラウザが再生を止めることがある。止まった・再開したことを知らせる。
+  onStateChange(listener:(running:boolean)=>void){audio.onstatechange=()=>listener(audio.state==='running');},
   setVolume(value:number){master.gain.value=value;},
+  // 新しい AI 通話の合図（2 音のチャイム）。音量スライダーに連動する。
+  chime(){
+   const start=audio.currentTime+0.02;
+   [880,1320].forEach((freq,i)=>{
+    const t=start+i*0.18,osc=audio.createOscillator(),gain=audio.createGain();
+    osc.type='sine';osc.frequency.value=freq;
+    gain.gain.setValueAtTime(0,t);gain.gain.linearRampToValueAtTime(0.4,t+0.02);gain.gain.exponentialRampToValueAtTime(0.001,t+0.3);
+    osc.connect(gain);gain.connect(master);osc.start(t);osc.stop(t+0.32);
+   });
+  },
   // 音声フレーム: [チャネル u8][予約 3B][サンプルレート u32le][PCM s16le ...]
   play(frame:ArrayBuffer){const view=new DataView(frame),player=players[view.getUint8(0)];if(player)player.push(new Int16Array(frame,HEADER_BYTES),view.getUint32(4,true));},
   reset(){for(const p of players)p.reset();},
