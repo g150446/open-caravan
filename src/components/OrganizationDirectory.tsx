@@ -23,7 +23,7 @@ export function OrganizationContact({record}:{record:Organization}){
 
 export function OrganizationDirectory({masters,onOpen}:{
  masters:Masters;
- onOpen:(kind:OrganizationKind,record?:Organization)=>void;
+ onOpen:(kind:OrganizationKind,record?:Organization,focusVisitPrefs?:boolean)=>void;
 }){
  const [kind,setKind]=useState<OrganizationKind|''>('');
  const [search,setSearch]=useState('');
@@ -65,6 +65,9 @@ export function OrganizationDirectory({masters,onOpen}:{
      <td>
       {row.kind==='facilities'&&<i className="color-dot" style={{background:facilityColor(row.record)}}/>}
       <OrganizationName record={row.record}/>
+      {row.kind==='facilities'&&<div>
+       <button type="button" className="link" aria-label={row.record.name+'の診察希望・NGを設定'} onClick={()=>onOpen(row.kind,row.record,true)}>診察希望・NGを設定</button>
+      </div>}
       {kind==='pharmacies'&&row.kind==='pharmacies'&&row.record.note&&<small>{row.record.note}</small>}
      </td>
      <td>{organizationLabels[row.kind]}</td>
